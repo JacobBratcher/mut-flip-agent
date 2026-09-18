@@ -1,5 +1,5 @@
 name: MUT Flip Agent
-version: "1.1.0"
+version: "1.2.0"
 slug: mut_flip_agent
 description: Watches mut.gg PC prices and sends Discord alerts for flips and long-term investments.
 url: https://github.com/JacobBratcher/mut-flip-agent
@@ -8,11 +8,15 @@ arch:
   - aarch64
 init: false
 startup: application
+hassio_api: true
+services:
+  - mqtt:want
 boot: auto
 options:
   discord_webhook_url: ""
   platform: pc
   game: "27"
+  fetch_mode: browser
   api_token: ""
   api_token_header: Authorization
   requests_per_minute: 10
@@ -47,6 +51,7 @@ schema:
   discord_webhook_url: url
   platform: list(pc)
   game: str
+  fetch_mode: list(browser|direct)
   api_token: password?
   api_token_header: str
   requests_per_minute: int(1,120)

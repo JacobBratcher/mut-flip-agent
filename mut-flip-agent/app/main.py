@@ -9,6 +9,7 @@ import requests
 from . import analysis, config
 from .client import Blocked, MutGG, normalize_watch, parse_sales
 from .db import DB, ts
+from .ha import HA
 from .notify import Discord
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -26,6 +27,13 @@ class Agent:
         self.backoff = 0
         self.watched = set()
         self.plan = analysis.plan(cfg, 0, 0)
+        self.ha = HA()
+        self.status = "starting"
+        self.picks = []
+        self.last_picks = 0
+        self.last_publish = 0
+        self.last_price_ts = None
+        self.checks_day, self.checks_today = datetime.now().date(), 0
 
     # ---------------------------------------------------------------- setup
     def sync_items(self):
@@ -75,7 +83,12 @@ class Agent:
     # ------------------------------------------------------------ one item
     def check(self, row):
         uid, now = row["uid"], time.time()
-        data = self.api.prices(uid)
+        data = self.api.prices(uid, row["url"])
+        self.status = "running"
+        self.last_price_ts = datetime.now().astimezone().isoformat()
+        if datetime.now().date() != self.checks_day:
+            self.checks_day, self.checks_today = datetime.now().date(), 0
+        self.checks_today += 1
         sales = parse_sales(data)
         self.db.add_sales(uid, sales)
 
@@ -91,6 +104,8 @@ class Agent:
             row = self.ensure_name(row)
             self.discord.flip(row["name"] or uid, row["url"], signal, self.cfg["platform"])
             self.db.log_alert(uid, "flip")
+            self.db.log_flip(uid, row["name"] or uid, row["url"], signal)
+            self.last_publish = 0
             log.info("FLIP %s buy<=%s profit=%s", uid, signal.max_buy, signal.profit)
 
         recent = self.db.sales_since(uid, now - 3 * DAY)
@@ -115,13 +130,8 @@ class Agent:
         return self.db.item(row["uid"])
 
     # --------------------------------------------------------------- digest
-    def maybe_digest(self):
+    def compute_picks(self):
         iv = self.cfg["invest"]
-        if not iv["enabled"]:
-            return
-        today = datetime.now().strftime("%Y-%m-%d")
-        if datetime.now().hour < iv["digest_hour"] or self.db.get("last_digest") == today:
-            return
         now, picks = time.time(), []
         for row in self.db.all_items():
             hist = self.db.sales_since(row["uid"], now - iv["window_days"] * DAY)
@@ -129,10 +139,49 @@ class Agent:
             if sig:
                 picks.append((row["name"] or row["uid"], row["url"], sig))
         picks.sort(key=lambda x: x[2].score, reverse=True)
-        self.discord.digest(picks[: iv["top_n"]], self.cfg["platform"])
+        self.picks = picks[: iv["top_n"]]
+        self.last_picks = now
+        return self.picks
+
+    def maybe_digest(self):
+        iv = self.cfg["invest"]
+        if not iv["enabled"]:
+            return
+        if time.time() - self.last_picks > 3600:
+            self.compute_picks()
+            self.last_publish = 0
+        today = datetime.now().strftime("%Y-%m-%d")
+        if datetime.now().hour < iv["digest_hour"] or self.db.get("last_digest") == today:
+            return
+        picks = self.compute_picks()
+        self.discord.digest(picks, self.cfg["platform"])
         self.db.put("last_digest", today)
         self.db.prune(max(iv["window_days"], 7) + 2)
-        log.info("Digest sent with %d picks", min(len(picks), iv["top_n"]))
+        log.info("Digest sent with %d picks", len(picks))
+
+    def publish(self):
+        if time.time() - self.last_publish < 60:
+            return
+        self.last_publish = time.time()
+        flips = [{"name": r["name"], "url": r["url"], "buy": r["buy"], "max_buy": r["max_buy"],
+                  "market": r["market"], "profit": r["profit"], "roi": round(r["roi"], 3),
+                  "falling": bool(r["falling"]),
+                  "when": datetime.fromtimestamp(r["ts"]).astimezone().isoformat()}
+                 for r in self.db.recent_flips()]
+        picks = [{"name": n, "url": u, "buy": p.current, "target": p.target, "high": p.high,
+                  "profit": p.profit, "roi": round(p.roi, 3), "drawdown": round(p.drawdown, 3),
+                  "daily_sales": round(p.daily_sales, 1), "record_low": p.record_low}
+                 for n, u, p in self.picks]
+        state = {
+            "status": self.status,
+            "cards_tracked": len(self.db.all_items()),
+            "hot_cards": self.db.count_tier("hot"),
+            "checks_today": self.checks_today,
+            "flips_24h": len(self.db.recent_flips(limit=1000)),
+            "invest_picks": len(picks),
+            "last_price_update": self.last_price_ts,
+        }
+        self.ha.publish(state, flips, picks)
 
     # ----------------------------------------------------------------- loop
     def run(self):
@@ -144,6 +193,7 @@ class Agent:
                     self.sync_items()
                     last_sync = time.time()
                 self.maybe_digest()
+                self.publish()
                 row = self.db.next_due()
                 if not row:
                     time.sleep(15)
@@ -160,6 +210,9 @@ class Agent:
                 time.sleep(30)
 
     def handle_block(self, e):
+        self.status = "blocked"
+        self.last_publish = 0
+        self.publish()
         self.backoff = min(3600, max(60, self.backoff * 2, e.retry_after))
         log.warning("Blocked by mut.gg (%s); pausing %ss", e, self.backoff)
         if time.time() - float(self.db.get("last_block_alert", 0)) > 6 * 3600:

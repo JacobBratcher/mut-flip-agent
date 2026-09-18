@@ -33,6 +33,8 @@ class MutGG:
         self.min_gap = 60.0 / max(1, int(cfg["requests_per_minute"]))
         self._last = 0.0
         self._lock = threading.Lock()
+        self.mode = cfg.get("fetch_mode", "browser")
+        self._browser = None
         self.s = requests.Session()
         self.s.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
         if cfg.get("api_token"):
@@ -42,12 +44,15 @@ class MutGG:
                 token = f"Bearer {token}"
             self.s.headers[header] = token
 
-    def _get(self, url, **kw):
+    def _throttle(self):
         with self._lock:
             wait = self._last + self.min_gap - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
             self._last = time.monotonic()
+
+    def _get(self, url, **kw):
+        self._throttle()
         r = self.s.get(url, timeout=30, **kw)
         ctype = r.headers.get("content-type", "")
         if r.status_code in (403, 429, 503) or "Just a moment" in r.text[:600]:
@@ -60,8 +65,15 @@ class MutGG:
         return r, ctype
 
     # ---- prices -----------------------------------------------------------
-    def prices(self, unique_id: str) -> dict:
-        r, ctype = self._get(f"{BASE}/api/mutdb/prices/{unique_id}/{self.platform}/")
+    def prices(self, unique_id: str, card_url: str = "") -> dict:
+        path = f"/api/mutdb/prices/{unique_id}/{self.platform}/"
+        if self.mode == "browser":
+            if self._browser is None:
+                from .browser import BrowserFetcher
+                self._browser = BrowserFetcher(Blocked)
+            self._throttle()
+            return self._browser.get_json(path, card_url).get("data") or {}
+        r, ctype = self._get(BASE + path)
         if "json" not in ctype:
             raise Blocked(f"non-JSON response for {unique_id}")
         return r.json().get("data") or {}

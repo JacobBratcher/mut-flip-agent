@@ -13,7 +13,7 @@ class FakeAPI:
     def __init__(self):
         self.auctions = [{"soldPrice": 500_000, "soldDate": iso(h)} for h in range(2, 40, 3)]
 
-    def prices(self, uid):
+    def prices(self, uid, url=""):
         return {"pricesData": {"completedAuctions": list(self.auctions)}}
 
     def item_name(self, url):

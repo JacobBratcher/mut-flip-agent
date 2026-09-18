@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS alerts (
     uid TEXT, kind TEXT, sent_at REAL
 );
 CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS flips (
+    ts REAL, uid TEXT, name TEXT, url TEXT, buy INTEGER, max_buy INTEGER,
+    market INTEGER, profit INTEGER, roi REAL, falling INTEGER
+);
 """
 
 
@@ -126,6 +130,17 @@ class DB:
     def log_alert(self, uid, kind):
         self.c.execute("INSERT INTO alerts VALUES(?,?,?)", (uid, kind, time.time()))
         self.c.commit()
+
+    def log_flip(self, uid, name, url, f):
+        self.c.execute("INSERT INTO flips VALUES(?,?,?,?,?,?,?,?,?,?)",
+                       (time.time(), uid, name, url, f.buy_seen, f.max_buy, f.market,
+                        f.profit, f.roi, int(f.falling)))
+        self.c.execute("DELETE FROM flips WHERE ts < ?", (time.time() - 7 * 86400,))
+        self.c.commit()
+
+    def recent_flips(self, hours=24, limit=15):
+        return self.c.execute("SELECT * FROM flips WHERE ts >= ? ORDER BY ts DESC LIMIT ?",
+                              (time.time() - hours * 3600, limit)).fetchall()
 
     # key/value
     def get(self, k, default=None):

@@ -10,6 +10,7 @@ DEFAULTS = {
     "discord_webhook_url": "",
     "platform": "pc",
     "game": "27",
+    "fetch_mode": "browser",
     "api_token": "",
     "api_token_header": "Authorization",
     "requests_per_minute": 10,

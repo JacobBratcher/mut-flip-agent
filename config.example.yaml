@@ -1,6 +1,7 @@
 # Standalone Docker config. Secrets go in .env, not here.
 platform: pc
 game: "27"
+fetch_mode: browser              # browser (Playwright) or direct (plain HTTP)
 api_token_header: Authorization   # change if mut.gg told you a different header
 requests_per_minute: 10           # keep within what mut.gg approved
 watchlist:

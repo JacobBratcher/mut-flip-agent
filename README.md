@@ -35,6 +35,15 @@ Cards at `min_ovr` (default 83) and up are discovered every 6 hours from mut.gg'
 
 **Poll budget (default 10 requests/min):** about 12,000 requests/day after 15% headroom. With ~420 cards at 83+, every card gets checked at least daily, and the top 166 by coins traded per day get checked every 20 minutes. Weaker hot cards drop to cold automatically. The plan is logged hourly, and you get a Discord warning if your settings go over budget. Only raise `requests_per_minute` if mut.gg approved a higher rate. The agent also honors their `Retry-After` header.
 
+## How it gets prices
+
+By default (`fetch_mode: browser`) it runs a headless Chromium via Playwright, loads mut.gg like a visitor, and reads prices the same way the site's own page does, with mut.gg's permission. There's no fingerprint spoofing. If Cloudflare still refuses, it backs off and tells you. `fetch_mode: direct` uses plain HTTP instead.
+
+## Home Assistant sensors
+
+Via MQTT discovery (Mosquitto add-on), under a **MUT Flip Agent** device:
+`sensor.mut_flip_agent_status`, `_cards_tracked`, `_hot_cards`, `_checks_today`, `_flips_24h` (recent flips in the `flips` attribute), `_invest_picks` (picks in the `picks` attribute), `_last_price_update`.
+
 ## Install: Home Assistant add-on (recommended)
 
 1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, add `https://github.com/JacobBratcher/mut-flip-agent`.
