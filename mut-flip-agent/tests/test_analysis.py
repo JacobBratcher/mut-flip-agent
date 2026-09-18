@@ -68,3 +68,15 @@ def test_tiers():
     assert analysis.tier_for(hot, DEFAULTS, NOW, False) == "hot"
     assert analysis.tier_for(hist([(900, 5)]), DEFAULTS, NOW, False) == "cold"
     assert analysis.tier_for([], DEFAULTS, NOW, True) == "watch"
+
+
+def test_plan_default_fits_full_market():
+    p = analysis.plan(DEFAULTS, n_watch=10, n_total=4000)
+    assert p["fits"]
+    assert p["budget_per_day"] == int(10 * 1440 * 0.85)
+    assert 50 <= p["hot_cap"] <= 150
+
+
+def test_plan_over_budget_flags():
+    cfg = DEFAULTS | {"requests_per_minute": 1}
+    assert not analysis.plan(cfg, n_watch=10, n_total=4000)["fits"]

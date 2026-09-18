@@ -25,6 +25,7 @@ class Agent:
         self.tax = cfg["tax_rate"]
         self.backoff = 0
         self.watched = set()
+        self.plan = analysis.plan(cfg, 0, 0)
 
     # ---------------------------------------------------------------- setup
     def sync_items(self):
@@ -45,6 +46,23 @@ class Agent:
             for uid, url in self.api.discover():
                 self.db.upsert_item(uid, url)
             self.db.put("last_discovery", time.time())
+        self.rebalance()
+
+    def rebalance(self):
+        """Keep the polling plan inside the request budget."""
+        total = len(self.db.all_items())
+        self.plan = analysis.plan(self.cfg, len(self.watched), total)
+        demoted = self.db.demote_hot_beyond(self.plan["hot_cap"], time.time())
+        p = self.plan
+        msg = (f"Budget {p['budget_per_day']:,} req/day | watch {p['watch_load']:,} | "
+               f"cold {p['cold_load']:,} | hot cap {p['hot_cap']} cards | {total:,} cards total")
+        log.info("Poll plan: %s%s", msg, f" (demoted {demoted})" if demoted else "")
+        if not p["fits"] and self.db.get("warned_plan") != msg:
+            self.discord.status(
+                f"Poll plan is over budget: {msg}. Cold cards will be checked less often than "
+                "cold_hours. Shrink the watchlist, raise cold_hours, or raise requests_per_minute "
+                "if mut.gg allows it.", 0xE67E22)
+            self.db.put("warned_plan", msg)
 
     # ------------------------------------------------------------ one item
     def check(self, row):
@@ -52,16 +70,6 @@ class Agent:
         data = self.api.prices(uid)
         sales = parse_sales(data)
         self.db.add_sales(uid, sales)
-
-        if not row["name"]:
-            name = uid
-            if row["url"]:
-                try:
-                    name = self.api.item_name(row["url"])
-                except (requests.RequestException, Blocked):
-                    pass
-            self.db.set_name(uid, name)
-            row = self.db.item(uid)
 
         last_seen = row["last_sale_seen"]
         new = [(p, ts(d)) for p, d in sales if d > last_seen] if last_seen else []
@@ -72,13 +80,31 @@ class Agent:
         signal = analysis.flip_signal(new, history, self.cfg, self.tax, now)
         cooldown = self.cfg["flip"]["alert_cooldown_hours"] * 3600
         if signal and now - self.db.last_alert(uid, "flip") > cooldown:
+            row = self.ensure_name(row)
             self.discord.flip(row["name"] or uid, row["url"], signal, self.cfg["platform"])
             self.db.log_alert(uid, "flip")
             log.info("FLIP %s buy<=%s profit=%s", uid, signal.max_buy, signal.profit)
 
         recent = self.db.sales_since(uid, now - 3 * DAY)
         tier = analysis.tier_for(recent, self.cfg, now, uid in self.watched)
+        self.db.set_score(uid, sum(p for p, _ in recent) / 3 if recent else 0)
         self.db.set_schedule(uid, tier, now + analysis.interval_for(tier, self.cfg))
+        if tier == "hot":
+            # Over capacity? The lowest-value hot cards (possibly this one) drop to cold.
+            self.db.demote_hot_beyond(self.plan["hot_cap"], now + analysis.interval_for("cold", self.cfg))
+            tier = self.db.item(uid)["tier"]
+        if tier in ("watch", "hot"):
+            self.ensure_name(self.db.item(uid))
+
+    def ensure_name(self, row):
+        """Fetch the full card name only for cards we care about (saves ~4k requests)."""
+        if row["name"] or not row["url"]:
+            return row
+        try:
+            self.db.set_name(row["uid"], self.api.item_name(row["url"]))
+        except (requests.RequestException, Blocked):
+            return row
+        return self.db.item(row["uid"])
 
     # --------------------------------------------------------------- digest
     def maybe_digest(self):
@@ -126,7 +152,7 @@ class Agent:
                 time.sleep(30)
 
     def handle_block(self, e):
-        self.backoff = min(3600, max(60, self.backoff * 2))
+        self.backoff = min(3600, max(60, self.backoff * 2, e.retry_after))
         log.warning("Blocked by mut.gg (%s); pausing %ss", e, self.backoff)
         if time.time() - float(self.db.get("last_block_alert", 0)) > 6 * 3600:
             self.discord.status(

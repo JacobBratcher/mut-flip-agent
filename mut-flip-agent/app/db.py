@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS items (
     tier TEXT DEFAULT 'new',          -- watch | hot | cold | new
     next_check REAL DEFAULT 0,
     last_check REAL DEFAULT 0,
-    last_sale_seen TEXT DEFAULT ''
+    last_sale_seen TEXT DEFAULT '',
+    score REAL DEFAULT 0              -- coins traded per day (value x volume)
 );
 CREATE TABLE IF NOT EXISTS sales (
     uid TEXT, price INTEGER, sold_at TEXT,
@@ -34,6 +35,9 @@ class DB:
         self.c = sqlite3.connect(path, check_same_thread=False)
         self.c.row_factory = sqlite3.Row
         self.c.executescript(SCHEMA)
+        cols = {r["name"] for r in self.c.execute("PRAGMA table_info(items)")}
+        if "score" not in cols:
+            self.c.execute("ALTER TABLE items ADD COLUMN score REAL DEFAULT 0")
         self.c.commit()
 
     # items
@@ -59,6 +63,21 @@ class DB:
         self.c.execute("UPDATE items SET tier=?, next_check=?, last_check=? WHERE uid=?",
                        (tier, next_check, time.time(), uid))
         self.c.commit()
+
+    def set_score(self, uid, score):
+        self.c.execute("UPDATE items SET score=? WHERE uid=?", (score, uid))
+        self.c.commit()
+
+    def count_tier(self, tier):
+        return self.c.execute("SELECT COUNT(*) n FROM items WHERE tier=?", (tier,)).fetchone()["n"]
+
+    def demote_hot_beyond(self, keep, next_check):
+        rows = self.c.execute("SELECT uid FROM items WHERE tier='hot' ORDER BY score DESC").fetchall()
+        extra = [r["uid"] for r in rows[keep:]]
+        self.c.executemany("UPDATE items SET tier='cold', next_check=? WHERE uid=?",
+                           [(next_check, u) for u in extra])
+        self.c.commit()
+        return len(extra)
 
     def set_name(self, uid, name):
         self.c.execute("UPDATE items SET name=? WHERE uid=?", (name, uid))

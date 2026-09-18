@@ -120,3 +120,25 @@ def interval_for(tier, cfg):
     t = cfg["tiers"]
     return {"watch": t["watch_minutes"] * 60, "hot": t["hot_minutes"] * 60}.get(
         tier, t["cold_hours"] * 3600)
+
+
+def plan(cfg, n_watch, n_total):
+    """Request budget per day and how many cards can be 'hot' without starving the rest.
+
+    Keeps 15% headroom for retries, discovery and name lookups.
+    """
+    t = cfg["tiers"]
+    budget = cfg["requests_per_minute"] * 1440 * 0.85
+    watch_load = n_watch * 1440 / t["watch_minutes"]
+    cold_each = 24 / t["cold_hours"]
+    cold_load = max(0, n_total - n_watch) * cold_each
+    hot_extra_each = 1440 / t["hot_minutes"] - cold_each
+    spare = budget - watch_load - cold_load
+    hot_cap = max(0, int(spare // hot_extra_each)) if hot_extra_each > 0 else 0
+    return {
+        "budget_per_day": int(budget),
+        "watch_load": int(watch_load),
+        "cold_load": int(cold_load),
+        "hot_cap": hot_cap,
+        "fits": spare >= 0,
+    }

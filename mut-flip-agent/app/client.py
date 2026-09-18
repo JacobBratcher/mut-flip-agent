@@ -21,6 +21,10 @@ UNIQUE_ID_RE = re.compile(r"/players/[^/]+/(\d{2}-\d+)/?")
 class Blocked(Exception):
     """mut.gg returned a challenge/403/429 instead of data."""
 
+    def __init__(self, msg, retry_after=0):
+        super().__init__(msg)
+        self.retry_after = retry_after
+
 
 class MutGG:
     def __init__(self, cfg):
@@ -47,7 +51,11 @@ class MutGG:
         r = self.s.get(url, timeout=30, **kw)
         ctype = r.headers.get("content-type", "")
         if r.status_code in (403, 429, 503) or "Just a moment" in r.text[:600]:
-            raise Blocked(f"{r.status_code} from {url}")
+            try:
+                retry = int(r.headers.get("Retry-After", 0))
+            except ValueError:
+                retry = 0
+            raise Blocked(f"{r.status_code} from {url}", retry)
         r.raise_for_status()
         return r, ctype
 

@@ -58,3 +58,18 @@ def test_flip_alert_end_to_end(tmp_path, monkeypatch):
     agent.api.auctions.insert(0, {"soldPrice": 355_000, "soldDate": iso(0.005)})
     agent.check(agent.db.item("27-162004004"))    # cooldown blocks a repeat
     assert len(agent.discord.flips) == 1
+
+
+def test_hot_tier_is_capped(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    cfg = DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False}
+    agent = main.Agent(cfg)
+    agent.api, agent.discord = FakeAPI(), FakeDiscord()
+    agent.api.auctions = [{"soldPrice": 500_000, "soldDate": iso(h)} for h in range(1, 60, 2)]
+    for i in range(5):
+        agent.db.upsert_item(f"27-{i}", "")
+    agent.plan = {"hot_cap": 2, "fits": True}
+    for i in range(5):
+        agent.check(agent.db.item(f"27-{i}"))
+    assert agent.db.count_tier("hot") == 2
+    assert agent.db.count_tier("cold") == 3

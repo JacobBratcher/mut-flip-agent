@@ -12,7 +12,7 @@ DEFAULTS = {
     "game": "27",
     "api_token": "",
     "api_token_header": "Authorization",
-    "requests_per_minute": 20,
+    "requests_per_minute": 10,
     "watchlist": [],
     "discover_all_players": True,
     "flip": {
