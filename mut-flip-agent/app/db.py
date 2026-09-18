@@ -79,6 +79,15 @@ class DB:
         self.c.commit()
         return len(extra)
 
+    def keep_only(self, uids):
+        """Drop items (and their sales) that are no longer tracked."""
+        keep = set(uids)
+        gone = [r["uid"] for r in self.all_items() if r["uid"] not in keep]
+        self.c.executemany("DELETE FROM items WHERE uid=?", [(u,) for u in gone])
+        self.c.executemany("DELETE FROM sales WHERE uid=?", [(u,) for u in gone])
+        self.c.commit()
+        return len(gone)
+
     def set_name(self, uid, name):
         self.c.execute("UPDATE items SET name=? WHERE uid=?", (name, uid))
         self.c.commit()

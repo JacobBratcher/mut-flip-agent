@@ -42,10 +42,18 @@ class Agent:
             if row["tier"] == "watch" and row["uid"] not in self.watched:
                 self.db.set_schedule(row["uid"], "new", 0)
         last = float(self.db.get("last_discovery", 0))
-        if self.cfg["discover_all_players"] and time.time() - last > DAY:
-            for uid, url in self.api.discover():
-                self.db.upsert_item(uid, url)
-            self.db.put("last_discovery", time.time())
+        min_ovr = int(self.cfg.get("min_ovr") or 0)
+        changed = self.db.get("discovery_min_ovr") != str(min_ovr)
+        if self.cfg["discover_all_players"] and (changed or time.time() - last > 6 * 3600):
+            found = self.api.discover(min_ovr)
+            if found:
+                for uid, url in found:
+                    self.db.upsert_item(uid, url)
+                dropped = self.db.keep_only([u for u, _ in found] + list(self.watched))
+                if dropped:
+                    log.info("Stopped tracking %d cards outside the filter", dropped)
+                self.db.put("last_discovery", time.time())
+                self.db.put("discovery_min_ovr", min_ovr)
         self.rebalance()
 
     def rebalance(self):

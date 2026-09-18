@@ -31,9 +31,9 @@ Note: mut.gg publishes *completed* sales, not live listings. An alert means "thi
 | hot | Worth ≥ 25k and ≥ 5 sales/day | 20 min |
 | cold | Everything else | 24 h |
 
-All cards are auto-discovered daily from mut.gg's sitemap.
+Cards at `min_ovr` (default 83) and up are discovered every 6 hours from mut.gg's player list (about 420 cards). Set `min_ovr: 0` to track everything.
 
-**Poll budget (default 10 requests/min):** about 12,000 requests/day after 15% headroom. With 10 watchlist cards and ~4,000 cards total, that covers watch (2,880/day) and a daily pass on every card (~4,000/day). The rest goes to the top 75 hot cards, ranked by coins traded per day; weaker hot cards drop to cold automatically. The first full pass over the market takes about 7 hours. The plan is logged hourly, and you get a Discord warning if your settings go over budget. Only raise `requests_per_minute` if mut.gg approved a higher rate. The agent also honors their `Retry-After` header.
+**Poll budget (default 10 requests/min):** about 12,000 requests/day after 15% headroom. With ~420 cards at 83+, every card gets checked at least daily, and the top 166 by coins traded per day get checked every 20 minutes. Weaker hot cards drop to cold automatically. The plan is logged hourly, and you get a Discord warning if your settings go over budget. Only raise `requests_per_minute` if mut.gg approved a higher rate. The agent also honors their `Retry-After` header.
 
 ## Install: Home Assistant add-on (recommended)
 

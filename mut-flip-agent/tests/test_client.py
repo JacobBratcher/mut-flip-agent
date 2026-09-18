@@ -12,3 +12,17 @@ def test_parse_sales_real_shape():
         {"soldPrice": 440000, "soldDate": "2026-09-18T02:23:49.034133+00:00"},
         {"soldPrice": None, "soldDate": "x"}]}}
     assert parse_sales(data) == [(440000, "2026-09-18T02:23:49.034133+00:00")]
+
+
+def test_parse_player_list():
+    from app.client import parse_player_list
+    html = open("/tmp/f.html").read() if __import__("os").path.exists("/tmp/f.html") else ""
+    page = ('<div class="player-list-item"><a href="/players/27227-reggie-bush/27-109027227/" '
+            'class="player-list-item__link"><div>OVR</div><div>89</div><div>Reggie</div></a></div>'
+            '<div class="player-list-item"><a href="/players/1-x/27-1/"><div>OVR</div><div>80</div></a></div>')
+    assert parse_player_list(page) == [
+        ("27-109027227", "https://www.mut.gg/players/27227-reggie-bush/27-109027227/", 89),
+        ("27-1", "https://www.mut.gg/players/1-x/27-1/", 80)]
+    if html:
+        items = parse_player_list(html)
+        assert len(items) == 15 and all(o >= 83 for _, _, o in items)

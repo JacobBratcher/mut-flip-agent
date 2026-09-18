@@ -66,9 +66,34 @@ class MutGG:
             raise Blocked(f"non-JSON response for {unique_id}")
         return r.json().get("data") or {}
 
-    # ---- discovery (sitemap) ---------------------------------------------
-    def discover(self) -> list[tuple[str, str]]:
-        """Returns [(unique_id, url)] for every current-game player item."""
+    # ---- discovery ---------------------------------------------------------
+    def discover(self, min_ovr=0) -> list[tuple[str, str]]:
+        """[(unique_id, url)] for current-game player items at or above min_ovr."""
+        if min_ovr:
+            return self._discover_by_ovr(min_ovr)
+        return self._discover_sitemap()
+
+    def _discover_by_ovr(self, min_ovr) -> list[tuple[str, str]]:
+        """Walks mut.gg's filtered player list (HTML, 15 cards/page)."""
+        found, page = {}, 1
+        while page <= 200:
+            try:
+                r, _ = self._get(f"{BASE}/players/", params={"overall__gte": min_ovr, "page": page},
+                                 headers={"Accept": "text/html"})
+            except requests.HTTPError:          # past the last page
+                break
+            new = 0
+            for uid, url, ovr in parse_player_list(r.text):
+                if ovr >= min_ovr and uid.startswith(f"{self.game}-") and uid not in found:
+                    found[uid] = url
+                    new += 1
+            if not new:
+                break
+            page += 1
+        log.info("Discovered %d player items at %d+ OVR", len(found), min_ovr)
+        return list(found.items())
+
+    def _discover_sitemap(self) -> list[tuple[str, str]]:
         found, page = {}, 1
         while True:
             url = f"{BASE}/sitemap-player-detail-{self.game}.xml" + (f"?p={page}" if page > 1 else "")
@@ -95,6 +120,18 @@ class MutGG:
         m = re.search(r"<title>(.*?)</title>", r.text, re.S)
         title = html.unescape(m.group(1)).strip() if m else ""
         return re.sub(r"\s*-\s*Madden NFL \d+\s*-\s*MUT\.GG\s*$", "", title) or url
+
+
+def parse_player_list(page_html: str) -> list[tuple[str, str, int]]:
+    """[(unique_id, url, ovr)] from a mut.gg /players/ list page."""
+    out = []
+    for block in page_html.split('<div class="player-list-item"')[1:]:
+        link = re.search(r'href="(/players/[^"]+/(\d{2}-\d+)/)"', block)
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", block))
+        ovr = re.search(r"OVR\s+(\d{2})\b", text)
+        if link and ovr:
+            out.append((link.group(2), BASE + link.group(1), int(ovr.group(1))))
+    return out
 
 
 def parse_sales(data: dict) -> list[tuple[int, str]]:
