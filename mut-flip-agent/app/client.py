@@ -33,7 +33,7 @@ class MutGG:
         self.min_gap = 60.0 / max(1, int(cfg["requests_per_minute"]))
         self._last = 0.0
         self._lock = threading.Lock()
-        self.mode = cfg.get("fetch_mode", "browser")
+        self.mode = cfg.get("fetch_mode", "extension")
         self.s = requests.Session()
         self.s.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
         if cfg.get("api_token"):
