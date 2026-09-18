@@ -1,0 +1,33 @@
+# Standalone Docker config. Secrets go in .env, not here.
+platform: pc
+game: "27"
+api_token_header: Authorization   # change if mut.gg told you a different header
+requests_per_minute: 20           # keep within what mut.gg approved
+watchlist:
+  # Paste mut.gg player URLs. These get checked every few minutes.
+  - https://www.mut.gg/players/12562-tj-watt/27-162004004/
+discover_all_players: true
+flip:
+  min_profit: 10000
+  min_roi: 0.08
+  min_discount: 0.12
+  lookback_hours: 48
+  min_sales: 8
+  alert_cooldown_hours: 6
+  max_buy_budget: 0               # 0 = no cap
+invest:
+  enabled: true
+  digest_hour: 9
+  window_days: 30
+  min_days_history: 5
+  min_drawdown: 0.25
+  min_daily_sales: 3
+  recovery_target: 0.5
+  top_n: 10
+tiers:
+  watch_minutes: 5
+  hot_minutes: 20
+  cold_hours: 24
+  hot_min_value: 25000
+  hot_min_daily_sales: 5
+tax_rate: 0.10

@@ -1,0 +1,70 @@
+import time
+
+from app import analysis
+from app.config import DEFAULTS
+
+NOW = time.time()
+H, D = 3600, 86400
+TAX = 0.10
+
+
+def hist(prices_hours_ago):
+    return [(p, NOW - h * H) for p, h in prices_hours_ago]
+
+
+def test_flip_triggers_on_cheap_sale():
+    history = hist([(500_000, h) for h in range(1, 30, 3)])
+    new = [(380_000, NOW - 60)]
+    f = analysis.flip_signal(new, history + new, DEFAULTS, TAX, NOW)
+    assert f is not None
+    assert f.market == 500_000
+    assert f.profit == 500_000 * 0.9 - 380_000
+    assert f.max_buy < 450_000
+
+
+def test_no_flip_when_margin_eaten_by_tax():
+    history = hist([(100_000, h) for h in range(1, 30, 3)])
+    new = [(92_000, NOW - 60)]
+    assert analysis.flip_signal(new, history + new, DEFAULTS, TAX, NOW) is None
+
+
+def test_no_flip_without_enough_history():
+    history = hist([(500_000, 2), (500_000, 4)])
+    new = [(300_000, NOW - 60)]
+    assert analysis.flip_signal(new, history + new, DEFAULTS, TAX, NOW) is None
+
+
+def test_falling_market_uses_recent_price():
+    old = [(600_000, h) for h in range(20, 46, 2)]
+    recent = [(450_000, h) for h in (1, 3, 5, 7)]
+    history = hist(old + recent)
+    new = [(330_000, NOW - 60)]
+    f = analysis.flip_signal(new, history + new, DEFAULTS, TAX, NOW)
+    assert f is not None and f.falling and f.market == 450_000
+
+
+def test_invest_finds_leveled_off_dip():
+    sales = []
+    for day in range(10, 0, -1):
+        price = 200_000 if day > 5 else 120_000
+        sales += [(price, NOW - day * D + i * H) for i in range(6)]
+    sales += [(121_000, NOW - i * H) for i in range(1, 6)]
+    iv = analysis.invest_signal(sorted(sales, key=lambda s: s[1]), DEFAULTS, TAX, NOW)
+    assert iv is not None
+    assert iv.high == 200_000 and iv.drawdown > 0.35 and iv.profit > 0
+
+
+def test_invest_skips_still_falling():
+    sales = []
+    for day in range(10, -1, -1):
+        price = 200_000 - (10 - day) * 12_000
+        sales += [(price, NOW - day * D + i * H) for i in range(5)]
+    sales = [s for s in sales if s[1] <= NOW]
+    assert analysis.invest_signal(sales, DEFAULTS, TAX, NOW) is None
+
+
+def test_tiers():
+    hot = hist([(60_000, h) for h in range(1, 72, 4)])
+    assert analysis.tier_for(hot, DEFAULTS, NOW, False) == "hot"
+    assert analysis.tier_for(hist([(900, 5)]), DEFAULTS, NOW, False) == "cold"
+    assert analysis.tier_for([], DEFAULTS, NOW, True) == "watch"

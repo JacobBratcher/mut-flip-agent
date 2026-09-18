@@ -1,0 +1,60 @@
+"""End-to-end: fake mut.gg + fake Discord, verify a flip alert fires once."""
+from datetime import datetime, timedelta, timezone
+
+from app import main
+from app.config import DEFAULTS
+
+
+def iso(hours_ago):
+    return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+
+
+class FakeAPI:
+    def __init__(self):
+        self.auctions = [{"soldPrice": 500_000, "soldDate": iso(h)} for h in range(2, 40, 3)]
+
+    def prices(self, uid):
+        return {"pricesData": {"completedAuctions": list(self.auctions)}}
+
+    def item_name(self, url):
+        return "T.J. Watt Team of the Week 87 OVR"
+
+    def discover(self):
+        return []
+
+
+class FakeDiscord:
+    def __init__(self):
+        self.flips = []
+
+    def flip(self, name, url, f, platform):
+        self.flips.append((name, f))
+
+    def status(self, *a, **k):
+        pass
+
+    def digest(self, *a, **k):
+        pass
+
+
+def test_flip_alert_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    cfg = DEFAULTS | {"discord_webhook_url": "x",
+                      "watchlist": ["https://www.mut.gg/players/12562-tj-watt/27-162004004/"],
+                      "discover_all_players": False}
+    agent = main.Agent(cfg)
+    agent.api, agent.discord = FakeAPI(), FakeDiscord()
+    agent.sync_items()
+
+    agent.check(agent.db.next_due())              # first pass: builds history, no alert
+    assert agent.discord.flips == []
+
+    agent.api.auctions.insert(0, {"soldPrice": 360_000, "soldDate": iso(0.01)})
+    agent.check(agent.db.item("27-162004004"))    # cheap sale appears
+    assert len(agent.discord.flips) == 1
+    name, f = agent.discord.flips[0]
+    assert name.startswith("T.J. Watt") and f.buy_seen == 360_000
+
+    agent.api.auctions.insert(0, {"soldPrice": 355_000, "soldDate": iso(0.005)})
+    agent.check(agent.db.item("27-162004004"))    # cooldown blocks a repeat
+    assert len(agent.discord.flips) == 1
