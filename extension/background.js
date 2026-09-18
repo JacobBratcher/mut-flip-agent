@@ -8,6 +8,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const get = (keys) => chrome.storage.local.get(keys);
 const set = (obj) => chrome.storage.local.set(obj);
 
+// Settings written by install.ps1 (config.json) win, so re-running the installer updates them.
+async function bootstrap() {
+  try {
+    const r = await fetch(chrome.runtime.getURL("config.json"));
+    if (!r.ok) return;
+    const c = await r.json();
+    const cur = await get(["agentUrl", "token", "enabled"]);
+    const patch = {};
+    if (c.agentUrl && c.agentUrl !== cur.agentUrl) patch.agentUrl = c.agentUrl;
+    if (c.token && c.token !== cur.token) patch.token = c.token;
+    if (cur.enabled === undefined && c.autostart) patch.enabled = true;
+    if (Object.keys(patch).length) await set(patch);
+  } catch (_) { /* no config.json: configured via the Settings page instead */ }
+}
+
 async function agent(method, path, body) {
   const { agentUrl, token } = await get(["agentUrl", "token"]);
   const r = await fetch(agentUrl.replace(/\/$/, "") + path, {
@@ -28,7 +43,11 @@ function feederTab() {
 }
 
 async function findOrOpenTab() {
-  const { tabId } = await get(["tabId"]);
+  let { tabId } = await get(["tabId"]);
+  if (!tabId) {
+    const open = await chrome.tabs.query({ url: "https://www.mut.gg/*" });
+    if (open.length) { tabId = open[0].id; await chrome.tabs.update(tabId, { pinned: true }); await set({ tabId }); }
+  }
   if (tabId) {
     try {
       const t = await chrome.tabs.get(tabId);
@@ -64,6 +83,7 @@ async function loop() {
   running = true;
   let backoff = 0;
   try {
+    await bootstrap();
     const { agentUrl, token } = await get(["agentUrl", "token"]);
     if (!agentUrl || !token) { await set({ state: "not configured" }); return; }
     let cfg = await agent("GET", "/config");

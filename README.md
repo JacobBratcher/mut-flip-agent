@@ -46,10 +46,22 @@ Cards at `min_ovr` (default 83) and up are discovered every 6 hours from mut.gg'
 
 If mut.gg refuses in your browser, the feeder pauses (backing off up to 15 min) and the agent shows **blocked**. Prices only flow while Chrome is running on that PC. The other mode, `direct`, uses plain HTTP from the server; mut.gg blocks it.
 
-### Install the extension
-1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → pick the `extension/` folder.
-2. Open the extension's **Settings**. Set the Agent URL to `http://<your HA IP>:8099` and the token to the add-on's `feeder_token`, then **Save & test**.
-3. Click the extension icon → **Start**. A pinned mut.gg tab opens. Leave it open.
+### Install the feeder on Windows (one line)
+
+On the Windows PC or VM that will stay on, open **PowerShell** (no admin needed) and run:
+
+```powershell
+irm https://raw.githubusercontent.com/JacobBratcher/mut-flip-agent/main/extension/install.ps1 | iex
+```
+
+It asks for the agent URL (`http://<HA IP>:8099`) and the add-on's `feeder_token`, checks that it can reach the agent, and then:
+- installs Chromium (regular Chrome no longer allows auto-loading a local extension),
+- downloads and pre-configures the extension,
+- adds a startup shortcut, turns off sleep while plugged in, and launches it.
+
+Re-run it any time to update. Over RDP, **disconnect** when you leave, don't sign out.
+
+Manual install instead: `chrome://extensions` → Developer mode → **Load unpacked** → `extension/` → Settings → enter the URL and token → Start.
 
 **Tip:** in Discord, set the alert channel's notifications to *All Messages* so alerts buzz your phone instantly.
 
