@@ -71,12 +71,24 @@ def test_tiers():
 
 
 def test_plan_default_fits_full_market():
-    p = analysis.plan(DEFAULTS, n_watch=10, n_total=4000)
+    p = analysis.plan(DEFAULTS, n_watch=10, n_total=420)
     assert p["fits"]
-    assert p["budget_per_day"] == int(10 * 1440 * 0.85)
-    assert 50 <= p["hot_cap"] <= 150
+    assert p["budget_per_day"] == int(20 * 1440 * 0.85)
+    assert 100 <= p["hot_cap"] <= 200
 
 
 def test_plan_over_budget_flags():
     cfg = DEFAULTS | {"requests_per_minute": 1}
     assert not analysis.plan(cfg, n_watch=10, n_total=4000)["fits"]
+
+
+def test_live_deal_finds_cheap_listing():
+    history = hist([(500_000, h) for h in range(1, 30, 3)])
+    listings = [(480_000, NOW + 600), (370_000, NOW + 300), (300_000, NOW - 10)]  # last one expired
+    d = analysis.live_deal(listings, history, DEFAULTS, TAX, NOW)
+    assert d is not None and d.bin_price == 370_000 and d.profit == int(500_000 * 0.9 - 370_000)
+
+
+def test_live_deal_none_when_listings_at_market():
+    history = hist([(500_000, h) for h in range(1, 30, 3)])
+    assert analysis.live_deal([(495_000, NOW + 600)], history, DEFAULTS, TAX, NOW) is None

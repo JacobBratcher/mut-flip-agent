@@ -53,6 +53,24 @@ class Discord:
             embed["url"] = url
         self.send([embed])
 
+    def listing(self, name, url, d, platform):
+        warn = "\n⚠️ Market is sliding. Resell quickly or skip." if d.falling else ""
+        embed = {
+            "title": f"🚨 Listed now: {name}",
+            "color": RED,
+            "description": (f"Buy Now **{coins(d.bin_price)}**, {d.discount:.0%} under market. "
+                            f"Ends <t:{int(d.ends)}:R>.{warn}"),
+            "fields": [
+                {"name": "Buy Now", "value": coins(d.bin_price), "inline": True},
+                {"name": "Resell around", "value": coins(d.market), "inline": True},
+                {"name": "Profit after tax", "value": f"{coins(d.profit)} ({d.roi:.0%})", "inline": True},
+            ],
+            "footer": {"text": f"{platform.upper()} • live listing"},
+        }
+        if url:
+            embed["url"] = url
+        self.send([embed], content="@here")
+
     def digest(self, picks, platform):
         if not picks:
             self.send(content="📈 Investment digest: no cards meet your rules today.")

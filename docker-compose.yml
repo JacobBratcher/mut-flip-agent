@@ -9,6 +9,8 @@ services:
     environment:
       TZ: America/New_York
       CONFIG_PATH: /config/config.yaml
+    ports:
+      - "8099:8099"
     volumes:
       - ./config.yaml:/config/config.yaml:ro
       - ./data:/data

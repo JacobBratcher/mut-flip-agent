@@ -79,7 +79,7 @@ class MutGG:
         return r.json().get("data") or {}
 
     # ---- discovery ---------------------------------------------------------
-    def discover(self, min_ovr=0) -> list[tuple[str, str]]:
+    def discover(self, min_ovr=0) -> list[tuple[str, str, str]]:
         """[(unique_id, url)] for current-game player items at or above min_ovr."""
         if min_ovr:
             return self._discover_by_ovr(min_ovr)
@@ -95,15 +95,15 @@ class MutGG:
             except requests.HTTPError:          # past the last page
                 break
             new = 0
-            for uid, url, ovr in parse_player_list(r.text):
+            for uid, url, ovr, name in parse_player_list(r.text):
                 if ovr >= min_ovr and uid.startswith(f"{self.game}-") and uid not in found:
-                    found[uid] = url
+                    found[uid] = (url, name)
                     new += 1
             if not new:
                 break
             page += 1
         log.info("Discovered %d player items at %d+ OVR", len(found), min_ovr)
-        return list(found.items())
+        return [(uid, url, name) for uid, (url, name) in found.items()]
 
     def _discover_sitemap(self) -> list[tuple[str, str]]:
         found, page = {}, 1
@@ -124,7 +124,7 @@ class MutGG:
                 break
             page += 1
         log.info("Discovered %d player items", len(found))
-        return list(found.items())
+        return [(uid, url, "") for uid, url in found.items()]
 
     def item_name(self, url: str) -> str:
         """Full card name from the player page title, e.g. 'T.J. Watt Team of the Week 87 OVR'."""
@@ -134,15 +134,16 @@ class MutGG:
         return re.sub(r"\s*-\s*Madden NFL \d+\s*-\s*MUT\.GG\s*$", "", title) or url
 
 
-def parse_player_list(page_html: str) -> list[tuple[str, str, int]]:
-    """[(unique_id, url, ovr)] from a mut.gg /players/ list page."""
+def parse_player_list(page_html: str) -> list[tuple[str, str, int, str]]:
+    """[(unique_id, url, ovr, name)] from a mut.gg /players/ list page."""
     out = []
     for block in page_html.split('<div class="player-list-item"')[1:]:
         link = re.search(r'href="(/players/[^"]+/(\d{2}-\d+)/)"', block)
-        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", block))
-        ovr = re.search(r"OVR\s+(\d{2})\b", text)
-        if link and ovr:
-            out.append((link.group(2), BASE + link.group(1), int(ovr.group(1))))
+        text = html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", block)))
+        m = re.search(r"OVR\s+(\d{2})\s+(.+?)\s+[A-Z]{3}\s+\d{2}\b", text)
+        if link and m:
+            ovr = int(m.group(1))
+            out.append((link.group(2), BASE + link.group(1), ovr, f"{m.group(2).strip()} {ovr} OVR"))
     return out
 
 
@@ -153,6 +154,22 @@ def parse_sales(data: dict) -> list[tuple[int, str]]:
         p, d = a.get("soldPrice"), a.get("soldDate")
         if isinstance(p, (int, float)) and p > 0 and d:
             out.append((int(p), d))
+    return out
+
+
+def parse_live(data: dict) -> list[tuple[int, float]]:
+    """[(buy_now_price, end_unix_ts)] for active listings in a prices payload."""
+    from datetime import datetime
+    out = []
+    for a in (data.get("pricesData") or {}).get("liveAuctions") or []:
+        p, end = a.get("buyNowPrice"), a.get("endDate")
+        if not isinstance(p, (int, float)) or p <= 0 or not end:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(end).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        out.append((int(p), ts))
     return out
 
 

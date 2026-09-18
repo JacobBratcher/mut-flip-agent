@@ -63,6 +63,18 @@ class DB:
             f"SELECT * FROM items WHERE next_check<=? ORDER BY {order}, next_check LIMIT 1",
             (time.time(),)).fetchone()
 
+    def lease_due(self, n, lease_seconds):
+        """Hand out up to n due items and hold them for lease_seconds so they aren't reissued."""
+        order = "CASE tier WHEN 'watch' THEN 0 WHEN 'hot' THEN 1 WHEN 'new' THEN 2 ELSE 3 END"
+        now = time.time()
+        rows = self.c.execute(
+            f"SELECT * FROM items WHERE next_check<=? ORDER BY {order}, next_check LIMIT ?",
+            (now, n)).fetchall()
+        self.c.executemany("UPDATE items SET next_check=? WHERE uid=?",
+                           [(now + lease_seconds, r["uid"]) for r in rows])
+        self.c.commit()
+        return rows
+
     def set_schedule(self, uid, tier, next_check):
         self.c.execute("UPDATE items SET tier=?, next_check=?, last_check=? WHERE uid=?",
                        (tier, next_check, time.time(), uid))
@@ -133,7 +145,8 @@ class DB:
 
     def log_flip(self, uid, name, url, f):
         self.c.execute("INSERT INTO flips VALUES(?,?,?,?,?,?,?,?,?,?)",
-                       (time.time(), uid, name, url, f.buy_seen, f.max_buy, f.market,
+                       (time.time(), uid, name, url, getattr(f, "buy_seen", None) or f.bin_price,
+                        f.max_buy, f.market,
                         f.profit, f.roi, int(f.falling)))
         self.c.execute("DELETE FROM flips WHERE ts < ?", (time.time() - 7 * 86400,))
         self.c.commit()

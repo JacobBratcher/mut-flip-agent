@@ -27,17 +27,31 @@ Note: mut.gg publishes *completed* sales, not live listings. An alert means "thi
 **What gets checked how often**
 | Tier | Which cards | Default interval |
 |---|---|---|
-| watch | Your `watchlist` | 5 min |
-| hot | Worth ≥ 25k and ≥ 5 sales/day | 20 min |
+| watch | Your `watchlist` | 2 min |
+| hot | Worth ≥ 25k and ≥ 5 sales/day | 10 min |
 | cold | Everything else | 24 h |
 
 Cards at `min_ovr` (default 83) and up are discovered every 6 hours from mut.gg's player list (about 420 cards). Set `min_ovr: 0` to track everything.
 
-**Poll budget (default 10 requests/min):** about 12,000 requests/day after 15% headroom. With ~420 cards at 83+, every card gets checked at least daily, and the top 166 by coins traded per day get checked every 20 minutes. Weaker hot cards drop to cold automatically. The plan is logged hourly, and you get a Discord warning if your settings go over budget. Only raise `requests_per_minute` if mut.gg approved a higher rate. The agent also honors their `Retry-After` header.
+**Poll budget (default 20 requests/min):** about 24,000 requests/day after 15% headroom. With ~420 cards at 83+, every card gets checked at least daily, and the top 168 by coins traded per day get checked every 10 minutes. Weaker hot cards drop to cold automatically. The agent honors `Retry-After` and backs off on refusals.
 
 ## How it gets prices
 
-By default (`fetch_mode: browser`) it runs a headless Chromium via Playwright, loads mut.gg like a visitor, and reads prices the same way the site's own page does, with mut.gg's permission. There's no fingerprint spoofing. If Cloudflare still refuses, it backs off and tells you. `fetch_mode: direct` uses plain HTTP instead.
+**Default: `fetch_mode: extension`.** mut.gg only serves price data to real browsers, so prices come from your own Chrome:
+
+1. The **MUT Flip Feeder** extension (in `extension/`) keeps one pinned mut.gg tab open.
+2. It asks the agent which cards are due (watchlist every 2 min, hot cards every 10 min, the rest daily).
+3. That tab requests each card's prices exactly like mut.gg's own page does, including its "still updating" re-checks, at `requests_per_minute` (default 20).
+4. Each result goes straight to the agent. A **live Buy Now listing** under your max-buy price triggers a Discord alert (with `@here`) within about a second.
+
+If mut.gg refuses in your browser, the feeder pauses (backing off up to 15 min) and the agent shows **blocked**. Prices only flow while Chrome is running on that PC. Other modes: `browser` (headless Playwright on the server) and `direct` (plain HTTP).
+
+### Install the extension
+1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → pick the `extension/` folder.
+2. Open the extension's **Settings**. Set the Agent URL to `http://<your HA IP>:8099` and the token to the add-on's `feeder_token`, then **Save & test**.
+3. Click the extension icon → **Start**. A pinned mut.gg tab opens. Leave it open.
+
+**Tip:** in Discord, set the alert channel's notifications to *All Messages* so alerts buzz your phone instantly.
 
 ## Home Assistant sensors
 

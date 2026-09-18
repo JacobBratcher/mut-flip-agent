@@ -23,6 +23,18 @@ class Flip:
 
 
 @dataclass
+class Listing:
+    bin_price: int
+    ends: float          # unix time the listing ends
+    market: int
+    max_buy: int
+    profit: int
+    roi: float
+    discount: float
+    falling: bool
+
+
+@dataclass
 class Invest:
     current: int
     high: int
@@ -65,6 +77,31 @@ def flip_signal(new_sales, history, cfg, tax, now) -> Flip | None:
     if f.get("max_buy_budget") and buy > f["max_buy_budget"]:
         return None
     return Flip(buy, int(market), max_buy, int(profit), roi, discount, falling)
+
+
+def live_deal(listings, history, cfg, tax, now) -> Listing | None:
+    """Cheapest active Buy Now listing that clears the flip rules.
+
+    listings: [(buy_now_price, end_unix_ts)]
+    """
+    f = cfg["flip"]
+    if len(history) < f["min_sales"]:
+        return None
+    active = [(p, e) for p, e in listings if p and e > now]
+    if not active:
+        return None
+    market, falling = market_value(history, now)
+    sell_net = market * (1 - tax)
+    price, ends = min(active)
+    profit = sell_net - price
+    roi = profit / price
+    discount = 1 - price / market
+    if profit < f["min_profit"] or roi < f["min_roi"] or discount < f["min_discount"]:
+        return None
+    if f.get("max_buy_budget") and price > f["max_buy_budget"]:
+        return None
+    max_buy = int(min(sell_net - f["min_profit"], sell_net / (1 + f["min_roi"])))
+    return Listing(int(price), ends, int(market), max_buy, int(profit), roi, discount, falling)
 
 
 def daily_medians(history):

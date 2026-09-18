@@ -1,13 +1,14 @@
 """Scheduler loop: discover items, poll prices by tier, alert flips, send daily digest."""
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 
 import requests
 
 from . import analysis, config
-from .client import Blocked, MutGG, normalize_watch, parse_sales
+from .client import Blocked, MutGG, normalize_watch, parse_live, parse_sales
 from .db import DB, ts
 from .ha import HA
 from .notify import Discord
@@ -34,6 +35,9 @@ class Agent:
         self.last_publish = 0
         self.last_price_ts = None
         self.checks_day, self.checks_today = datetime.now().date(), 0
+        self.last_ingest = 0
+        self.feeder_state = ""
+        self.lock = threading.RLock()
 
     # ---------------------------------------------------------------- setup
     def sync_items(self):
@@ -55,9 +59,11 @@ class Agent:
         if self.cfg["discover_all_players"] and (changed or time.time() - last > 6 * 3600):
             found = self.api.discover(min_ovr)
             if found:
-                for uid, url in found:
+                for uid, url, name in found:
                     self.db.upsert_item(uid, url)
-                dropped = self.db.keep_only([u for u, _ in found] + list(self.watched))
+                    if name and not (self.db.item(uid)["name"] or ""):
+                        self.db.set_name(uid, name)
+                dropped = self.db.keep_only([u for u, _, _ in found] + list(self.watched))
                 if dropped:
                     log.info("Stopped tracking %d cards outside the filter", dropped)
                 self.db.put("last_discovery", time.time())
@@ -82,9 +88,14 @@ class Agent:
 
     # ------------------------------------------------------------ one item
     def check(self, row):
+        data = self.api.prices(row["uid"], row["url"])
+        self.process(row, data)
+
+    def process(self, row, data):
+        """Handle one card's price payload. Alerts go out immediately."""
         uid, now = row["uid"], time.time()
-        data = self.api.prices(uid, row["url"])
         self.status = "running"
+        self.last_ingest = now
         self.last_price_ts = datetime.now().astimezone().isoformat()
         if datetime.now().date() != self.checks_day:
             self.checks_day, self.checks_today = datetime.now().date(), 0
@@ -108,6 +119,16 @@ class Agent:
             self.last_publish = 0
             log.info("FLIP %s buy<=%s profit=%s", uid, signal.max_buy, signal.profit)
 
+        deal = analysis.live_deal(parse_live(data), history, self.cfg, self.tax, now)
+        if deal:
+            key = f"live:{deal.bin_price}:{int(deal.ends)}"
+            if not self.db.last_alert(uid, key):
+                self.discord.listing(row["name"] or uid, row["url"], deal, self.cfg["platform"])
+                self.db.log_alert(uid, key)
+                self.db.log_flip(uid, row["name"] or uid, row["url"], deal)
+                self.last_publish = 0
+                log.info("LISTING %s bin=%s profit=%s", uid, deal.bin_price, deal.profit)
+
         recent = self.db.sales_since(uid, now - 3 * DAY)
         tier = analysis.tier_for(recent, self.cfg, now, uid in self.watched)
         self.db.set_score(uid, sum(p for p, _ in recent) / 3 if recent else 0)
@@ -116,7 +137,7 @@ class Agent:
             # Over capacity? The lowest-value hot cards (possibly this one) drop to cold.
             self.db.demote_hot_beyond(self.plan["hot_cap"], now + analysis.interval_for("cold", self.cfg))
             tier = self.db.item(uid)["tier"]
-        if tier in ("watch", "hot"):
+        if tier in ("watch", "hot") and self.cfg["fetch_mode"] != "extension":
             self.ensure_name(self.db.item(uid))
 
     def ensure_name(self, row):
@@ -172,8 +193,16 @@ class Agent:
                   "profit": p.profit, "roi": round(p.roi, 3), "drawdown": round(p.drawdown, 3),
                   "daily_sales": round(p.daily_sales, 1), "record_low": p.record_low}
                  for n, u, p in self.picks]
+        status = self.status
+        if self.cfg["fetch_mode"] == "extension":
+            if self.feeder_state == "blocked":
+                status = "blocked"
+            elif time.time() - self.last_ingest > 300:
+                status = "waiting for feeder"
+            else:
+                status = "running"
         state = {
-            "status": self.status,
+            "status": status,
             "cards_tracked": len(self.db.all_items()),
             "hot_cards": self.db.count_tier("hot"),
             "checks_today": self.checks_today,
@@ -185,20 +214,31 @@ class Agent:
 
     # ----------------------------------------------------------------- loop
     def run(self):
-        self.discord.status(f"Started. Watching {self.cfg['platform'].upper()} market.", 0x95A5A6)
+        self.discord.status(f"Started. Watching {self.cfg['platform'].upper()} market "
+                            f"({self.cfg['fetch_mode']} mode).", 0x95A5A6)
+        if self.cfg["fetch_mode"] == "extension":
+            from .feeder import serve
+            serve(self, int(self.cfg.get("feeder_port", 8099)))
         last_sync = 0
         while True:
             try:
-                if time.time() - last_sync > 3600:
-                    self.sync_items()
-                    last_sync = time.time()
-                self.maybe_digest()
-                self.publish()
-                row = self.db.next_due()
+                with self.lock:
+                    if time.time() - last_sync > 3600:
+                        self.sync_items()
+                        last_sync = time.time()
+                    self.maybe_digest()
+                    self.publish()
+                if self.cfg["fetch_mode"] == "extension":
+                    self.upgrade_names()
+                    time.sleep(5)
+                    continue
+                with self.lock:
+                    row = self.db.next_due()
                 if not row:
                     time.sleep(15)
                     continue
-                self.check(row)
+                with self.lock:
+                    self.check(row)
                 self.backoff = 0
             except Blocked as e:
                 self.handle_block(e)
@@ -208,6 +248,20 @@ class Agent:
             except Exception:
                 log.exception("Unexpected error")
                 time.sleep(30)
+
+    def upgrade_names(self):
+        """In extension mode, fill full card names (program + OVR) for hot/watch cards, slowly."""
+        with self.lock:
+            row = self.db.c.execute(
+                "SELECT * FROM items WHERE tier IN ('watch','hot') AND name='' AND url!='' LIMIT 1").fetchone()
+        if not row:
+            return
+        try:
+            name = self.api.item_name(row["url"])
+        except (requests.RequestException, Blocked):
+            return
+        with self.lock:
+            self.db.set_name(row["uid"], name)
 
     def handle_block(self, e):
         self.status = "blocked"

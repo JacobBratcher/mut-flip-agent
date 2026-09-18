@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "MUT Flip Feeder",
+  "version": "1.0.0",
+  "description": "Feeds mut.gg prices from your own browser to your MUT Flip Agent on Home Assistant.",
+  "permissions": ["storage", "alarms", "tabs"],
+  "host_permissions": ["https://www.mut.gg/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["https://www.mut.gg/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ],
+  "action": { "default_title": "MUT Flip Feeder", "default_popup": "popup.html" },
+  "options_page": "options.html"
+}
