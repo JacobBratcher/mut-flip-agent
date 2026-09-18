@@ -1,7 +1,7 @@
 # Standalone Docker config. Secrets go in .env, not here.
 platform: pc
 game: "27"
-fetch_mode: extension            # extension (Chrome feeder), browser (Playwright) or direct
+fetch_mode: extension            # extension (Chrome feeder) or direct (plain HTTP)
 feeder_token: change-me          # shared secret with the Chrome extension
 api_token_header: Authorization   # change if mut.gg told you a different header
 requests_per_minute: 20           # keep within what mut.gg approved
