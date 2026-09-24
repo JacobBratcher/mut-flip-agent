@@ -36,6 +36,9 @@ $chrome = @(
     (Join-Path $env:ProgramFiles 'Chromium\Application\chrome.exe')
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $chrome) {
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        throw 'winget is not available. Install Chromium from https://github.com/Hibbiki/chromium-win64/releases, then re-run this installer.'
+    }
     Write-Host 'Installing Chromium (winget: Hibbiki.Chromium) ...'
     winget install -e --id Hibbiki.Chromium --silent --accept-package-agreements --accept-source-agreements | Out-Host
     $chrome = @(
@@ -47,9 +50,16 @@ if (-not $chrome) { throw 'Chromium was not found after install. Install Hibbiki
 Write-Host "  Chromium: $chrome" -ForegroundColor Green
 
 # 3. Close a previous feeder instance (only the one using our profile).
-Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" |
-    Where-Object { $_.CommandLine -like "*MUTFlipFeeder*" } |
-    ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null }
+# Killing the parent takes its renderer children with it, so by the time the loop
+# reaches those they are already gone - never treat that as a failure.
+try {
+    $stale = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*MUTFlipFeeder*' })
+    foreach ($p in $stale) {
+        try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    if ($stale.Count) { Write-Host "  Closed $($stale.Count) old feeder process(es)." }
+} catch { Write-Host '  (Could not check for an old feeder window; continuing.)' }
 Start-Sleep -Seconds 2
 
 # 4. Download the extension from GitHub.
@@ -57,12 +67,17 @@ Write-Host 'Downloading extension ...'
 $zip = Join-Path $env:TEMP 'mut-flip-agent.zip'
 $src = Join-Path $env:TEMP 'mut-flip-agent-src'
 Invoke-WebRequest 'https://codeload.github.com/JacobBratcher/mut-flip-agent/zip/refs/heads/main' -OutFile $zip -UseBasicParsing
-if (Test-Path $src) { Remove-Item $src -Recurse -Force }
+if (Test-Path $src) { Remove-Item $src -Recurse -Force -ErrorAction SilentlyContinue }
 Expand-Archive $zip $src -Force
+# Find the extension folder rather than assuming the zip's top-level name.
+$srcExt = Get-ChildItem $src -Directory -Recurse -Filter 'extension' |
+    Where-Object { Test-Path (Join-Path $_.FullName 'manifest.json') } |
+    Select-Object -First 1
+if (-not $srcExt) { throw 'The download did not contain the extension folder. Try again.' }
 New-Item -ItemType Directory -Force $root | Out-Null
-if (Test-Path $ext) { Remove-Item $ext -Recurse -Force }
-Copy-Item (Join-Path $src 'mut-flip-agent-main\extension') $ext -Recurse
-Remove-Item $zip, $src -Recurse -Force
+if (Test-Path $ext) { Remove-Item $ext -Recurse -Force -ErrorAction SilentlyContinue }
+Copy-Item $srcExt.FullName $ext -Recurse
+Remove-Item $zip, $src -Recurse -Force -ErrorAction SilentlyContinue
 
 # 5. Pre-configure it: agent URL + token, auto-start, and permission to reach the agent.
 $config = @{ agentUrl = $AgentUrl; token = $Token; autostart = $true } | ConvertTo-Json
