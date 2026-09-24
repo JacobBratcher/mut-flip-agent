@@ -6,11 +6,15 @@ import requests
 
 log = logging.getLogger(__name__)
 GREEN, GOLD, RED, BLUE = 0x2ECC71, 0xF1C40F, 0xE74C3C, 0x3498DB
-BASIS = {"sales": "Median of last 5 sales", "listings": "Just under cheapest rival listing"}
+BASIS = {"sales": "last 5 sales", "listings": "under cheapest rival"}
 
 
 def coins(n):
     return f"{int(n):,}"
+
+
+def signed(n):
+    return f"{int(n):+,}".replace("-", "−")
 
 
 def _pct(x):
@@ -94,17 +98,21 @@ class Discord:
         if promo_today:
             tips.append("Promo day: if it doesn't sell at the list price today, hold it for "
                         "tomorrow's bounce instead of dumping it.")
+        lines = [f"**Buy Now ≤ {coins(d.max_buy)}** (listed at {coins(d.bin_price)}). "
+                 f"Ends <t:{int(d.ends)}:R>.",
+                 f"Sell at **{coins(d.market)}** ({BASIS.get(d.basis, d.basis)}) → "
+                 f"**{signed(d.profit)}** after tax ({d.roi:.0%} ROI)"]
+        typical = getattr(d, "typical", None)
+        if typical and getattr(d, "typical_profit", None) is not None:
+            lines.append(f"Sell at **{coins(typical)}** (mut.gg price) → "
+                         f"**{signed(d.typical_profit)}** after tax")
         embed = {
             "title": f"🎯 {badge}: {name}",
             "color": GREEN if safe else GOLD,
-            "description": (f"**Buy Now ≤ {coins(d.max_buy)}** (listed at {coins(d.bin_price)}) → "
-                            f"**list at {coins(d.market)}** → **+{coins(d.profit)}** profit after "
-                            f"tax ({d.roi:.0%} ROI). Ends <t:{int(d.ends)}:R>."
-                            + ("\n" + "\n".join(tips) if tips else "")),
+            "description": "\n".join(lines + tips),
             "fields": [
                 {"name": "Sold last 24h", "value": str(getattr(d, "sales_24h", 0)), "inline": True},
                 {"name": "Trend", "value": trend_txt, "inline": True},
-                {"name": "List price from", "value": BASIS.get(d.basis, d.basis), "inline": True},
             ],
             "footer": {"text": f"{platform.upper()} • live listing"},
         }

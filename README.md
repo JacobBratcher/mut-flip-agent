@@ -26,14 +26,14 @@ Runs 24/7 as a Home Assistant add-on or a plain Docker container. Data access is
    - the **median of the last 5 sales** (what buyers are actually paying), and
    - just under the **cheapest competing Buy Now listing**, which you'd have to undercut to sell, so the estimate follows listings down immediately.
 
-   It's never above recent sales, so one optimistic listing can't make a flip look profitable. Each alert lists those last 5 sale prices so you can check it at a glance.
+   It's never above recent sales, so one optimistic listing can't make a flip look profitable. Each alert lists those last 5 sale prices, and also shows the profit if it only sells at **mut.gg's price** (the median of its last ~25 sales), so a short spike is easy to spot.
 2. A card needs only **3 sales in the last 7 days** to be priced.
 3. An alert fires only if, after the 10% auction tax, it clears **both** `min_profit` coins and `min_roi`, and it's at least `min_discount` under resale value.
 4. Each alert shows the **max price to buy at**, **what to list it for**, and whether that resale price came from listings or sales.
 5. A listing that's alerted and then sells doesn't alert again as a cheap sale.
 6. **Only cards you can resell fast:** at least `min_sales_24h` (3) sales in the last 24h (mut.gg's own count).
 7. **No falling knives:** skipped if the card's latest sales are down `max_drop` (15%) or more from the same time yesterday.
-8. **Graded:** 🟢 **SAFE** = sells 8+/day, flat or rising, 15%+ ROI. 🟡 **GOOD** = passes the rules above. Set `only_safe: true` to get only green ones.
+8. **Graded:** 🟢 **SAFE** = sells 8+/day, flat or rising, 15%+ ROI, and still clears `min_profit` at mut.gg's price. 🟡 **GOOD** = passes the rules above. Set `only_safe: true` to get only green ones.
 
 **Investments** (off by default; sent once a day at `digest_hour` when `invest.enabled` is on)
 - At least `min_days_history` days of data and `min_daily_sales` sales/day (so you can actually sell later).

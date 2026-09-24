@@ -31,3 +31,24 @@ def test_parse_volume():
     from app.client import parse_volume
     assert parse_volume({"pricesData": {"volume": {"day": {"sales": 13}}}}) == 13
     assert parse_volume({"pricesData": {}}) is None
+
+
+def test_parse_price():
+    from app.client import parse_price
+    assert parse_price({"pricesData": {"summary": {"price": 135100}}}) == 135100
+    assert parse_price({"pricesData": {"summary": {}}}) is None
+
+
+def test_listing_message_shows_both_prices(monkeypatch):
+    import time
+    from app import notify
+    from app.analysis import Listing
+    sent = []
+    d = notify.Discord("x")
+    monkeypatch.setattr(d, "send", lambda embeds=None, content=None: sent.append(embeds[0]))
+    d.listing("Xavier Watts", "", Listing(125_100, time.time() + 3000, 158_100, 131_750, 17_190,
+              0.137, 0.2, False, "sales", "good", 14, 0.137, [159_000, 100_000], 135_100, -3_510),
+              "pc")
+    text = sent[0]["description"]
+    assert "Sell at **158,100** (last 5 sales) → **+17,190**" in text
+    assert "Sell at **135,100** (mut.gg price) → **−3,510**" in text

@@ -8,7 +8,7 @@ from datetime import datetime
 import requests
 
 from . import analysis, config, market, youtube
-from .client import Blocked, MutGG, normalize_watch, parse_live, parse_sales, parse_volume
+from .client import Blocked, MutGG, normalize_watch, parse_live, parse_price, parse_sales, parse_volume
 from .db import DB
 from .ha import HA
 from .notify import Discord
@@ -132,7 +132,7 @@ class Agent:
             log.info("FLIP %s buy<=%s profit=%s", uid, signal.max_buy, signal.profit)
 
         deal = analysis.live_deal(listings, history, self.cfg, self.tax, now,
-                                  sales_24h=parse_volume(data))
+                                  sales_24h=parse_volume(data), mutgg_price=parse_price(data))
         if deal:
             key = f"live:{deal.bin_price}:{int(deal.ends)}"
             if not self.db.last_alert(uid, key):
@@ -370,7 +370,8 @@ class Agent:
                   "ends": (datetime.fromtimestamp(r["ends"]).astimezone().isoformat()
                            if r["ends"] else None),
                   "grade": r["grade"] or "good", "sales_24h": r["sales_24h"],
-                  "trend": _pct(r["trend"])}
+                  "trend": _pct(r["trend"]), "typical": r["typical"],
+                  "typical_profit": r["typical_profit"]}
                  for r in self.db.recent_flips()]
         picks = [{"name": n, "url": u, "buy": p.current, "target": p.target, "high": p.high,
                   "profit": p.profit, "roi": round(p.roi, 3), "drawdown": round(p.drawdown, 3),

@@ -156,6 +156,12 @@ def parse_volume(data: dict) -> int | None:
     return int(n) if isinstance(n, (int, float)) and n >= 0 else None
 
 
+def parse_price(data: dict) -> int | None:
+    """mut.gg's displayed price for the card (summary.price: median of its last ~25 sales)."""
+    n = ((data.get("pricesData") or {}).get("summary") or {}).get("price")
+    return int(n) if isinstance(n, (int, float)) and n > 0 else None
+
+
 def parse_live(data: dict) -> list[tuple[int, float]]:
     """[(buy_now_price, end_unix_ts)] for active listings in a prices payload."""
     from datetime import datetime

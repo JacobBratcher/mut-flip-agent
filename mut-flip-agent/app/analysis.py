@@ -38,6 +38,8 @@ class Listing:
     sales_24h: int = 0              # how fast it resells
     trend: float | None = None      # latest sales vs. this time yesterday
     recent: list | None = None      # last few sale prices, newest first
+    typical: int | None = None      # mut.gg's price (median of ~25 sales)
+    typical_profit: int | None = None  # profit after tax if it only sells at that price
 
 
 @dataclass
@@ -54,6 +56,7 @@ class Invest:
 
 
 RECENT_SALES = 5        # the latest sales that define "what buyers are paying"
+TYPICAL_SALES = 25      # mut.gg's price is the median of about this many sales
 UNDERCUT = 0.99         # list just under the cheapest competitor to sell
 
 
@@ -67,10 +70,11 @@ def resale_value(history, listings, now, exclude_price=None):
 
     PC has little volume, so a multi-day average lags. Instead the resale price is
     the lower of:
-    - the median of the last few sales: what buyers are actually paying, and
+    - the median of the last 5 sales: what buyers are actually paying, and
     - just under the cheapest competing Buy Now: what you'd have to undercut to sell.
     It is never above what the card has been selling for, so one optimistic listing
-    can't make a flip look profitable.
+    can't make a flip look profitable. (Alerts also show profit at mut.gg's slower
+    price; see typical_price.)
 
     history: [(price, ts)]; listings: [(buy_now_price, end_ts)].
     exclude_price: the listing you'd be buying (so it isn't its own competitor).
@@ -89,6 +93,14 @@ def resale_value(history, listings, now, exclude_price=None):
         ask = comps[0] * UNDERCUT
         return ask, "listings", ask < sold * 0.9
     return sold, "sales", False
+
+
+def typical_price(history, mutgg_price=None):
+    """mut.gg's price (median of its last ~25 sales), or the same computed from history."""
+    if mutgg_price:
+        return int(mutgg_price)
+    prices = recent_prices(history, TYPICAL_SALES)
+    return int(median(prices)) if prices else None
 
 
 def _max_buy(sell_net, f):
@@ -129,14 +141,15 @@ def card_trend(history, now):
     return median(latest) / median(before) - 1
 
 
-def live_deal(listings, history, cfg, tax, now, sales_24h=None) -> Listing | None:
+def live_deal(listings, history, cfg, tax, now, sales_24h=None, mutgg_price=None) -> Listing | None:
     """Cheapest active Buy Now listing that clears the flip rules, graded for safety.
 
     Skips cards that don't resell fast enough (min_sales_24h) and falling knives
     (down max_drop or more since yesterday: the "resale" price is still sliding).
-    Safe = liquid, flat or rising, and a fat margin.
-    sales_24h: mut.gg's own 24h sales count when the payload has it (preferred over
-    counting stored sales).
+    Safe = liquid, flat or rising, a fat margin, and still profitable if it only
+    sells at mut.gg's price (so a short spike in the last few sales can't make it green).
+    sales_24h / mutgg_price: mut.gg's own 24h sales count and price when the payload
+    has them (preferred over computing them from stored sales).
     """
     f = cfg["flip"]
     if len(history) < f["min_sales"]:
@@ -159,13 +172,16 @@ def live_deal(listings, history, cfg, tax, now, sales_24h=None) -> Listing | Non
     trend = card_trend(history, now)
     if trend is not None and trend <= -f.get("max_drop", 1):
         return None
+    typical = typical_price(history, mutgg_price)
+    typical_profit = int(typical * (1 - tax) - price) if typical else None
     safe = (sales_24h >= f.get("safe_sales_24h", 8) and trend is not None and trend > -0.05
-            and roi >= f.get("safe_roi", 0.15) and not falling)
+            and roi >= f.get("safe_roi", 0.15) and not falling
+            and typical_profit is not None and typical_profit >= f["min_profit"])
     if f.get("only_safe") and not safe:
         return None
     return Listing(int(price), ends, int(market), _max_buy(sell_net, f), int(profit), roi,
                    discount, falling, basis, "safe" if safe else "good", sales_24h, trend,
-                   recent_prices(history))
+                   recent_prices(history), typical, typical_profit)
 
 
 def daily_medians(history):

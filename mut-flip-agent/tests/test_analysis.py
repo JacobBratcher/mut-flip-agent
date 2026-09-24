@@ -189,3 +189,27 @@ def test_own_listing_is_not_its_own_competitor():
     history = hist([(500_000, h) for h in (2, 5, 9)])
     v, basis, _ = analysis.resale_value(history, [(370_000, NOW + 600)], NOW, exclude_price=370_000)
     assert v == 500_000 and basis == "sales"
+
+
+# Xavier Watts Collectors Series 85 (PC), 2026-09-24 05:10 UTC: three sales at ~158-160K in the
+# last 4h after a day around 130-145K. mut.gg's price (last ~25 sales) was 135,100.
+XAVIER = [(159_000, 0.7), (100_000, 0.9), (158_100, 4.0), (160_100, 4.2), (145_100, 4.4),
+          (140_000, 6.0), (135_000, 8.2), (109_000, 8.9), (141_600, 9.4), (129_100, 10.0)]
+
+
+def test_alert_shows_profit_at_mutgg_price_too():
+    listings = [(125_100, NOW + 57 * 60), (165_100, NOW + 18 * H), (166_100, NOW + 100 * 60)]
+    d = analysis.live_deal(listings, hist(XAVIER), DEFAULTS, TAX, NOW, sales_24h=14,
+                           mutgg_price=135_100)
+    assert d.market == 158_100 and d.profit == 17_190
+    assert d.typical == 135_100 and d.typical_profit == int(135_100 * 0.9 - 125_100)
+    assert d.grade == "good"            # loses money at mut.gg's price, so never green
+
+
+def test_safe_needs_profit_at_mutgg_price():
+    steady = hist([(200_000, h) for h in range(1, 47, 2)])
+    listings = [(150_000, NOW + 600)]
+    d = analysis.live_deal(listings, steady, DEFAULTS, TAX, NOW)
+    assert d.grade == "safe" and d.typical == 200_000
+    d = analysis.live_deal(listings, steady, DEFAULTS, TAX, NOW, mutgg_price=160_000)
+    assert d.grade == "good" and d.typical_profit == int(160_000 * 0.9 - 150_000)
