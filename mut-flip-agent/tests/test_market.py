@@ -136,9 +136,8 @@ def _seed_crash(a):
     for i in range(12):
         uid = f"27-{i}"
         a.db.upsert_item(uid, "")
-        for p, t in card(uid, 100_000, 85_000)[3]:
-            iso = datetime.fromtimestamp(t, timezone.utc).isoformat()
-            a.db.add_sales(uid, [(p, iso)])
+        a.db.add_sales(uid, [(p, datetime.fromtimestamp(t, timezone.utc).isoformat())
+                             for p, t in card(uid, 100_000, 85_000)[3]])
 
 
 def test_crash_alert_once_and_daily_report(tmp_path, monkeypatch):

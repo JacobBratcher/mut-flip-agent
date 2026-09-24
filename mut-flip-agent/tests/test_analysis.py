@@ -105,11 +105,44 @@ def test_listings_pull_resale_down_immediately():
     assert v == 420_000 * 0.99 and basis == "listings" and falling
 
 
-def test_lone_optimistic_listing_is_capped_by_sales():
-    # Only competitor asks 800k while buyers paid 500k: trust at most +10% over sales.
+def test_resale_never_above_recent_sales():
+    # Only competitor asks 800k while buyers paid 500k: resale is what buyers paid.
     history = hist([(500_000, h) for h in (2, 5, 9)])
     v, basis, _ = analysis.resale_value(history, [(800_000, NOW + 900)], NOW)
-    assert v == 500_000 * 1.10 and basis == "sales"
+    assert v == 500_000 and basis == "sales"
+
+
+# Willie Anderson Legends 85 (PC), as mut.gg showed it on 2026-09-24 05:01 UTC:
+# (price, hours ago). 13 sales in the last 24h, prices all over the place.
+WILLIE = [(128_800, 0.35), (189_600, 1.33), (155_000, 5.05), (170_100, 5.73), (199_100, 7.7),
+          (201_300, 7.83), (99_100, 8.35), (151_000, 9.24), (179_600, 10.0), (161_000, 10.2),
+          (189_100, 11.2), (180_100, 12.3), (180_000, 14.0), (185_600, 24.4), (195_000, 25.3),
+          (137_100, 25.3), (151_100, 26.0), (151_000, 27.0), (188_999, 27.3), (178_100, 28.2)]
+
+
+def test_willie_anderson_is_not_a_snipe():
+    """The alert that said "list at 202,950, +15k": listed at 167,600 with one rival at 205k.
+    Recent sales put resale near 170k, which is a loss after tax."""
+    history = hist(WILLIE)
+    listings = [(167_600, NOW + 21 * H), (205_000, NOW + 17 * H)]
+    v, basis, _ = analysis.resale_value(history, listings, NOW, exclude_price=167_600)
+    assert v == 170_100 and basis == "sales"
+    assert analysis.live_deal(listings, history, DEFAULTS, TAX, NOW, sales_24h=13) is None
+
+
+def test_willie_anderson_real_snipe_still_alerts():
+    # Same card listed at 130k: 170,100 * 0.9 - 130,000 = +23k, a real snipe.
+    history = hist(WILLIE)
+    listings = [(130_000, NOW + 21 * H), (205_000, NOW + 17 * H)]
+    d = analysis.live_deal(listings, history, DEFAULTS, TAX, NOW, sales_24h=13)
+    assert d is not None and d.market == 170_100 and d.profit == int(170_100 * 0.9 - 130_000)
+    assert d.sales_24h == 13 and d.recent == [128_800, 189_600, 155_000, 170_100, 199_100]
+
+
+def test_mutgg_sales_count_overrides_stored_count():
+    history = hist(WILLIE)
+    listings = [(130_000, NOW + 21 * H)]
+    assert analysis.live_deal(listings, history, DEFAULTS, TAX, NOW, sales_24h=1) is None
 
 
 def test_slow_seller_is_skipped_by_default():

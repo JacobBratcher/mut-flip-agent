@@ -31,8 +31,15 @@ CREATE TABLE IF NOT EXISTS flips (
 """
 
 
+SAME_SALE_SECONDS = 600   # same card, same price, this close in time = one sale re-stamped by mut.gg
+
+
 def ts(iso: str) -> float:
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+
+
+def _matches(price, when, known):
+    return any(p == price and abs(t - when) <= SAME_SALE_SECONDS for p, t in known)
 
 
 class DB:
@@ -48,6 +55,10 @@ class DB:
             if col not in fcols:
                 self.c.execute(f"ALTER TABLE flips ADD COLUMN {col} {typ}")
         self.c.commit()
+        if self.get("sales_deduped") is None:
+            # Snipes logged before this were priced off duplicated sales: drop them too.
+            self.c.execute("DELETE FROM flips")
+            self.put("sales_deduped", self.dedupe_sales())
 
     # items
     def upsert_item(self, uid, url="", tier=None):
@@ -113,18 +124,52 @@ class DB:
         self.c.execute("UPDATE items SET name=? WHERE uid=?", (name, uid))
         self.c.commit()
 
-    def set_last_seen(self, uid, iso):
-        self.c.execute("UPDATE items SET last_sale_seen=? WHERE uid=?", (iso, uid))
-        self.c.commit()
-
     def all_items(self):
         return self.c.execute("SELECT * FROM items").fetchall()
 
     # sales
     def add_sales(self, uid, sales):
+        """Store a card's sale list and return the sales that weren't stored before.
+
+        mut.gg re-stamps recent sales every time it refreshes a card (sold_at = refresh
+        time minus "time since sold"), so the same sale comes back with a slightly
+        different sold_at on each check. Inserting blindly stored one sale dozens of
+        times and inflated sells/day and "last sales". Instead, mut.gg's list is treated
+        as the full record for the span it covers: that span is replaced, and only older
+        history (already off mut.gg's list) is kept from before.
+        """
+        if not sales:
+            return []
+        incoming = [(p, d, ts(d)) for p, d in sales]
+        start = min(t for _, _, t in incoming)
+        rows = self.c.execute("SELECT rowid, price, sold_at FROM sales WHERE uid=?", (uid,)).fetchall()
+        stored = [(r["rowid"], r["price"], ts(r["sold_at"])) for r in rows]
+        near = [(p, t) for _, p, t in stored if t >= start - SAME_SALE_SECONDS]
+        new = [(p, t) for p, _, t in incoming if stored and not _matches(p, t, near)]
+        prices = {p for p, _, _ in incoming}
+        stale = [(rid,) for rid, p, t in stored
+                 if t >= start or (t >= start - SAME_SALE_SECONDS and p in prices)]
+        self.c.executemany("DELETE FROM sales WHERE rowid=?", stale)
         self.c.executemany("INSERT OR IGNORE INTO sales VALUES(?,?,?)",
-                           [(uid, p, d) for p, d in sales])
+                           [(uid, p, d) for p, d, _ in incoming])
         self.c.commit()
+        return sorted(new, key=lambda s: s[1])
+
+    def dedupe_sales(self):
+        """One-time cleanup of sales stored repeatedly before add_sales replaced spans.
+
+        Copies of one sale share a price and sit within a few minutes of each other;
+        each run of those collapses to its newest copy.
+        """
+        rows = self.c.execute("SELECT rowid, uid, price, sold_at FROM sales").fetchall()
+        rows = sorted(((r["uid"], r["price"], ts(r["sold_at"]), r["rowid"]) for r in rows))
+        dead = []
+        for a, b in zip(rows, rows[1:]):
+            if a[0] == b[0] and a[1] == b[1] and b[2] - a[2] <= SAME_SALE_SECONDS:
+                dead.append((a[3],))
+        self.c.executemany("DELETE FROM sales WHERE rowid=?", dead)
+        self.c.commit()
+        return len(dead)
 
     def sales_since(self, uid, since_ts):
         rows = self.c.execute("SELECT price, sold_at FROM sales WHERE uid=?", (uid,)).fetchall()

@@ -1,5 +1,5 @@
 name: MUT Flip Agent
-version: "1.7.1"
+version: "1.7.2"
 slug: mut_flip_agent
 description: Watches mut.gg PC prices and sends Discord alerts for flips and long-term investments.
 url: https://github.com/JacobBratcher/mut-flip-agent

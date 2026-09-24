@@ -6,6 +6,7 @@ import requests
 
 log = logging.getLogger(__name__)
 GREEN, GOLD, RED, BLUE = 0x2ECC71, 0xF1C40F, 0xE74C3C, 0x3498DB
+BASIS = {"sales": "Median of last 5 sales", "listings": "Just under cheapest rival listing"}
 
 
 def coins(n):
@@ -97,16 +98,20 @@ class Discord:
             "title": f"🎯 {badge}: {name}",
             "color": GREEN if safe else GOLD,
             "description": (f"**Buy Now ≤ {coins(d.max_buy)}** (listed at {coins(d.bin_price)}) → "
-                            f"**list at {coins(d.market)}** → **+{coins(d.profit)}** after tax "
-                            f"({d.roi:.0%}). Ends <t:{int(d.ends)}:R>."
+                            f"**list at {coins(d.market)}** → **+{coins(d.profit)}** profit after "
+                            f"tax ({d.roi:.0%} ROI). Ends <t:{int(d.ends)}:R>."
                             + ("\n" + "\n".join(tips) if tips else "")),
             "fields": [
-                {"name": "Sells", "value": f"~{getattr(d, 'sales_24h', 0)}/day", "inline": True},
+                {"name": "Sold last 24h", "value": str(getattr(d, "sales_24h", 0)), "inline": True},
                 {"name": "Trend", "value": trend_txt, "inline": True},
-                {"name": "Resale based on", "value": d.basis, "inline": True},
+                {"name": "List price from", "value": BASIS.get(d.basis, d.basis), "inline": True},
             ],
             "footer": {"text": f"{platform.upper()} • live listing"},
         }
+        recent = getattr(d, "recent", None)
+        if recent:
+            embed["fields"].append({"name": "Last sales (newest first)",
+                                    "value": ", ".join(coins(p) for p in recent), "inline": False})
         if url:
             embed["url"] = url
         self.send([embed], content="@here")

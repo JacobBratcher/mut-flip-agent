@@ -37,6 +37,7 @@ class Listing:
     grade: str = "good"             # "safe" or "good"
     sales_24h: int = 0              # how fast it resells
     trend: float | None = None      # latest sales vs. this time yesterday
+    recent: list | None = None      # last few sale prices, newest first
 
 
 @dataclass
@@ -52,38 +53,42 @@ class Invest:
     score: float
 
 
-RECENT_SALES = 3        # how many of the latest sales define "what buyers are paying"
+RECENT_SALES = 5        # the latest sales that define "what buyers are paying"
 UNDERCUT = 0.99         # list just under the cheapest competitor to sell
-MAX_ABOVE_SALES = 0.10  # never price more than 10% above the latest sales
+
+
+def recent_prices(history, n=RECENT_SALES):
+    """Latest n sale prices, newest first."""
+    return [p for p, _ in sorted(history, key=lambda s: s[1], reverse=True)[:n]]
 
 
 def resale_value(history, listings, now, exclude_price=None):
     """What a card can realistically be resold for right now.
 
-    PC has little volume, so a multi-day average lags. Instead:
-    - the cheapest competing Buy Now is the price you'd have to undercut to sell,
-      so the estimate follows listings down immediately;
-    - the last few sales are what buyers actually paid, which caps how far above
-      them a listing is trusted (one optimistic seller can't inflate a flip).
+    PC has little volume, so a multi-day average lags. Instead the resale price is
+    the lower of:
+    - the median of the last few sales: what buyers are actually paying, and
+    - just under the cheapest competing Buy Now: what you'd have to undercut to sell.
+    It is never above what the card has been selling for, so one optimistic listing
+    can't make a flip look profitable.
 
     history: [(price, ts)]; listings: [(buy_now_price, end_ts)].
     exclude_price: the listing you'd be buying (so it isn't its own competitor).
     Returns (value, basis, falling), or (None, None, False) without enough data.
+    basis is "sales" or "listings"; falling means competitors are listed well under
+    recent sales (sellers are undercutting each other).
     """
-    recent = [p for p, _ in sorted(history, key=lambda s: s[1])[-RECENT_SALES:]]
-    last = median(recent) if recent else None
+    recent = recent_prices(history)
+    if not recent:
+        return None, None, False
+    sold = median(recent)
     comps = sorted(p for p, e in listings if p and e > now)
     if exclude_price is not None and exclude_price in comps:
         comps.remove(exclude_price)
-    ask = comps[0] * UNDERCUT if comps else None
-    if last is None:
-        return None, None, False
-    if ask is None:
-        return last, "sales", False
-    cap = last * (1 + MAX_ABOVE_SALES)
-    if ask <= cap:
-        return ask, "listings", ask < last * 0.9
-    return cap, "sales", False
+    if comps and comps[0] * UNDERCUT < sold:
+        ask = comps[0] * UNDERCUT
+        return ask, "listings", ask < sold * 0.9
+    return sold, "sales", False
 
 
 def _max_buy(sell_net, f):
@@ -124,12 +129,14 @@ def card_trend(history, now):
     return median(latest) / median(before) - 1
 
 
-def live_deal(listings, history, cfg, tax, now) -> Listing | None:
+def live_deal(listings, history, cfg, tax, now, sales_24h=None) -> Listing | None:
     """Cheapest active Buy Now listing that clears the flip rules, graded for safety.
 
     Skips cards that don't resell fast enough (min_sales_24h) and falling knives
     (down max_drop or more since yesterday: the "resale" price is still sliding).
     Safe = liquid, flat or rising, and a fat margin.
+    sales_24h: mut.gg's own 24h sales count when the payload has it (preferred over
+    counting stored sales).
     """
     f = cfg["flip"]
     if len(history) < f["min_sales"]:
@@ -145,7 +152,8 @@ def live_deal(listings, history, cfg, tax, now) -> Listing | None:
     profit, roi, discount = sell_net - price, (sell_net - price) / price, 1 - price / market
     if not _passes(profit, roi, discount, price, f):
         return None
-    sales_24h = sum(1 for _, t in history if t >= now - DAY)
+    if sales_24h is None:
+        sales_24h = sum(1 for _, t in history if t >= now - DAY)
     if sales_24h < f.get("min_sales_24h", 0):
         return None
     trend = card_trend(history, now)
@@ -156,7 +164,8 @@ def live_deal(listings, history, cfg, tax, now) -> Listing | None:
     if f.get("only_safe") and not safe:
         return None
     return Listing(int(price), ends, int(market), _max_buy(sell_net, f), int(profit), roi,
-                   discount, falling, basis, "safe" if safe else "good", sales_24h, trend)
+                   discount, falling, basis, "safe" if safe else "good", sales_24h, trend,
+                   recent_prices(history))
 
 
 def daily_medians(history):

@@ -150,6 +150,12 @@ def parse_sales(data: dict) -> list[tuple[int, str]]:
     return out
 
 
+def parse_volume(data: dict) -> int | None:
+    """mut.gg's own count of sales in the last 24h (volume.day.sales), if present."""
+    n = (((data.get("pricesData") or {}).get("volume") or {}).get("day") or {}).get("sales")
+    return int(n) if isinstance(n, (int, float)) and n >= 0 else None
+
+
 def parse_live(data: dict) -> list[tuple[int, float]]:
     """[(buy_now_price, end_unix_ts)] for active listings in a prices payload."""
     from datetime import datetime

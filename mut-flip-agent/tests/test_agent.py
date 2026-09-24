@@ -127,3 +127,53 @@ def test_snipes_only_by_default(tmp_path, monkeypatch):
     assert len(agent.discord.listings) == 1
     row = agent.db.recent_flips()[0]
     assert row["ends"] and row["buy"] == 350_000
+
+
+def _stamp(sales, shift_seconds):
+    """mut.gg's payload: sold dates recomputed at refresh time, so they drift a little."""
+    return [{"soldPrice": p, "soldDate": (datetime.now(timezone.utc)
+             - timedelta(hours=h) + timedelta(seconds=shift_seconds)).isoformat()} for p, h in sales]
+
+
+def test_restamped_sales_are_stored_once(tmp_path, monkeypatch):
+    """The same sales re-stamped on every refresh used to be stored again each check
+    (an 85 Legend showed ~575 sales/day instead of 13)."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    agent = main.Agent(DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False})
+    agent.discord = FakeDiscord()
+    agent.db.upsert_item("27-1", "")
+    sales = [(180_000 + i * 1000, h) for i, h in enumerate(range(1, 40, 3))]
+    for shift in (0, 40, -25, 95, 12):
+        agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": _stamp(sales, shift)}})
+    assert len(agent.db.sales_since("27-1", 0)) == len(sales)
+    # A genuinely new sale is detected as new, and only it.
+    new = agent.db.add_sales("27-1", [(p, d["soldDate"]) for p, d in
+                                      zip([175_000] + [p for p, _ in sales],
+                                          _stamp([(175_000, 0.01)] + sales, 30))])
+    assert [p for p, _ in new] == [175_000]
+    assert len(agent.db.sales_since("27-1", 0)) == len(sales) + 1
+
+
+def test_old_history_beyond_mutgg_list_is_kept(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    agent = main.Agent(DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False})
+    old = [(p, d["soldDate"]) for p, d in
+           zip([150_000] * 3, _stamp([(150_000, h) for h in (200, 210, 220)], 0))]
+    agent.db.add_sales("27-1", old)
+    recent = [(p, d["soldDate"]) for p, d in zip([160_000] * 2, _stamp([(160_000, 5), (160_000, 50)], 0))]
+    agent.db.add_sales("27-1", recent)
+    assert len(agent.db.sales_since("27-1", 0)) == 5
+
+
+def test_existing_duplicates_are_cleaned_up_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    agent = main.Agent(DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False})
+    base = datetime.now(timezone.utc) - timedelta(hours=3)
+    rows = [("27-1", 189_600, (base + timedelta(seconds=s)).isoformat()) for s in range(0, 900, 30)]
+    rows += [("27-1", 128_800, (base + timedelta(hours=1, seconds=s)).isoformat()) for s in range(0, 300, 20)]
+    rows += [("27-1", 189_600, (base + timedelta(hours=2)).isoformat())]     # a separate real sale
+    agent.db.c.executemany("INSERT INTO sales VALUES(?,?,?)", rows)
+    agent.db.c.execute("DELETE FROM state WHERE k='sales_deduped'")
+    agent.db.c.commit()
+    agent2 = main.Agent(DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False})
+    assert sorted(p for p, _ in agent2.db.sales_since("27-1", 0)) == [128_800, 189_600, 189_600]

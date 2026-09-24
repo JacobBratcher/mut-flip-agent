@@ -25,3 +25,9 @@ def test_parse_player_list():
     if html:
         items = parse_player_list(html)
         assert len(items) == 15 and all(o >= 83 and n for _, _, o, n in items)
+
+
+def test_parse_volume():
+    from app.client import parse_volume
+    assert parse_volume({"pricesData": {"volume": {"day": {"sales": 13}}}}) == 13
+    assert parse_volume({"pricesData": {}}) is None

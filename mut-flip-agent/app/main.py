@@ -8,8 +8,8 @@ from datetime import datetime
 import requests
 
 from . import analysis, config, market, youtube
-from .client import Blocked, MutGG, normalize_watch, parse_live, parse_sales
-from .db import DB, ts
+from .client import Blocked, MutGG, normalize_watch, parse_live, parse_sales, parse_volume
+from .db import DB
 from .ha import HA
 from .notify import Discord
 
@@ -112,14 +112,7 @@ class Agent:
         if datetime.now().date() != self.checks_day:
             self.checks_day, self.checks_today = datetime.now().date(), 0
         self.checks_today += 1
-        sales = parse_sales(data)
-        self.db.add_sales(uid, sales)
-
-        last_seen = row["last_sale_seen"]
-        new = [(p, ts(d)) for p, d in sales if d > last_seen] if last_seen else []
-        if sales:
-            self.db.set_last_seen(uid, max(d for _, d in sales))
-
+        new = self.db.add_sales(uid, parse_sales(data))
         history = self.db.sales_since(uid, now - self.cfg["flip"]["lookback_hours"] * 3600)
         listings = parse_live(data)
         signal = analysis.flip_signal(new, history, self.cfg, self.tax, now, listings)
@@ -138,7 +131,8 @@ class Agent:
             self.last_publish = 0
             log.info("FLIP %s buy<=%s profit=%s", uid, signal.max_buy, signal.profit)
 
-        deal = analysis.live_deal(listings, history, self.cfg, self.tax, now)
+        deal = analysis.live_deal(listings, history, self.cfg, self.tax, now,
+                                  sales_24h=parse_volume(data))
         if deal:
             key = f"live:{deal.bin_price}:{int(deal.ends)}"
             if not self.db.last_alert(uid, key):
