@@ -213,3 +213,22 @@ def test_safe_needs_profit_at_mutgg_price():
     assert d.grade == "safe" and d.typical == 200_000
     d = analysis.live_deal(listings, steady, DEFAULTS, TAX, NOW, mutgg_price=160_000)
     assert d.grade == "good" and d.typical_profit == int(160_000 * 0.9 - 150_000)
+
+
+def test_new_releases_stay_fresh_for_their_window():
+    assert analysis.is_fresh("Joe Burrow Team of the Week 88 OVR", NOW - 47 * H, NOW, DEFAULTS)
+    assert not analysis.is_fresh("Joe Burrow Team of the Week 88 OVR", NOW - 49 * H, NOW, DEFAULTS)
+    assert analysis.is_fresh("Barry Sanders LTD 96 OVR", NOW - 100 * H, NOW, DEFAULTS)
+    assert analysis.is_fresh("Ray Lewis Champions 95 OVR", NOW - 160 * H, NOW, DEFAULTS)
+    assert not analysis.is_fresh("Ray Lewis Champions 95 OVR", NOW - 170 * H, NOW, DEFAULTS)
+    assert not analysis.is_fresh("Anyone", None, NOW, DEFAULTS)
+    assert analysis.tier_for([], DEFAULTS, NOW, False, fresh=True) == "fresh"
+
+
+def test_plan_puts_new_releases_ahead_of_hot_cards():
+    base = analysis.plan(DEFAULTS, 0, 305)
+    p = analysis.plan(DEFAULTS, 0, 305, n_fresh=20)
+    assert p["fresh_seconds"] == 180 and p["fits"] and p["hot_cap"] < base["hot_cap"]
+    big = analysis.plan(DEFAULTS, 0, 400, n_fresh=150)    # huge drop: each checked less often
+    assert big["fresh_seconds"] > 180 and big["fits"]
+    assert analysis.interval_for("fresh", DEFAULTS, big) == big["fresh_seconds"]

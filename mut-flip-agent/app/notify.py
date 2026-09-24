@@ -87,12 +87,25 @@ class Discord:
             embed["url"] = url
         self.send([embed])
 
-    def listing(self, name, url, d, platform, promo_today=False):
+    def new_cards(self, names, every_seconds, tiers):
+        shown = "\n".join(f"• {n}" for n in names[:15]) + (f"\n…and {len(names) - 15} more" if len(names) > 15 else "")
+        self.send([{
+            "title": f"🆕 {len(names)} new card{'s' if len(names) != 1 else ''} just dropped",
+            "color": GOLD,
+            "description": (f"Checking {'them' if len(names) != 1 else 'it'} every "
+                            f"{max(1, every_seconds // 60)} min for the next {tiers.get('fresh_hours', 48)} h "
+                            f"(LTD / Champions: {tiers.get('fresh_long_hours', 168) // 24} days). Mistake "
+                            f"listings way under value are most common right after a drop.\n{shown}"),
+        }])
+
+    def listing(self, name, url, d, platform, promo_today=False, fresh=False):
         safe = getattr(d, "grade", "good") == "safe"
         badge = "🟢 SAFE" if safe else "🟡 GOOD"
         trend = getattr(d, "trend", None)
         trend_txt = "n/a" if trend is None else f"{trend * 100:+.0f}% vs yesterday"
         tips = []
+        if fresh:
+            tips.append("🆕 New release: prices are still settling. Buy fast, list right away.")
         if d.falling:
             tips.append("⚠️ Sellers are undercutting: list right away.")
         if promo_today:

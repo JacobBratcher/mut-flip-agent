@@ -16,6 +16,8 @@ SENSORS = [
     ("status", "Status", "mdi:swap-horizontal-circle", {}),
     ("cards_tracked", "Cards tracked", "mdi:cards-outline", {"state_class": "measurement"}),
     ("hot_cards", "Hot cards", "mdi:fire", {"state_class": "measurement"}),
+    ("new_cards", "New releases watched", "mdi:new-box", {"state_class": "measurement",
+                                                          "json_attributes_topic": f"{PREFIX}/fresh"}),
     ("checks_today", "Price checks today", "mdi:counter", {"state_class": "total_increasing"}),
     ("flips_24h", "Flips 24h", "mdi:cash-fast", {"state_class": "measurement",
                                                    "json_attributes_topic": f"{PREFIX}/flips"}),

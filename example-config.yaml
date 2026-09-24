@@ -34,4 +34,7 @@ tiers:
   cold_hours: 24
   hot_min_value: 25000
   hot_min_daily_sales: 5
+  fresh_minutes: 3        # new releases are checked this often...
+  fresh_hours: 48         # ...for this long after they come out
+  fresh_long_hours: 168   # LTD / Champions cards stay in the fast lane for a week
 tax_rate: 0.10

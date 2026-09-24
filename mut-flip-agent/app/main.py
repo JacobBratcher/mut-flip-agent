@@ -50,6 +50,8 @@ class Agent:
         self.next_weekdays = 0
         self._backfilling = False
         self.next = {"news": 0, "drops": 0, "market": 0, "youtube": 0}
+        self.fresh_map = {}              # uid -> when a newly released card first appeared
+        self.last_discovery_try = 0
 
     # ---------------------------------------------------------------- setup
     def sync_items(self):
@@ -65,12 +67,14 @@ class Agent:
         for row in self.db.all_items():
             if row["tier"] == "watch" and row["uid"] not in self.watched:
                 self.db.set_schedule(row["uid"], "new", 0)
-        last = float(self.db.get("last_discovery", 0))
         min_ovr = int(self.cfg.get("min_ovr") or 0)
         changed = self.db.get("discovery_min_ovr") != str(min_ovr)
-        if self.cfg["discover_all_players"] and (changed or time.time() - last > 6 * 3600):
+        if self.cfg["discover_all_players"] and (changed or self.discovery_due()):
+            self.last_discovery_try = time.time()
             found = self.api.discover(min_ovr)
             if found:
+                # First run or a new OVR filter: everything found is "already out", not new.
+                baseline = changed or not self.db.all_items()
                 for uid, url, name in found:
                     self.db.upsert_item(uid, url)
                     if name and not (self.db.item(uid)["name"] or ""):
@@ -78,17 +82,47 @@ class Agent:
                 dropped = self.db.keep_only([u for u, _, _ in found] + list(self.watched))
                 if dropped:
                     log.info("Stopped tracking %d cards outside the filter", dropped)
+                fresh = self.db.mark_seen([u for u, _, _ in found], time.time(), baseline)
+                if fresh:
+                    names = {u: n or u for u, _, n in found}
+                    for uid in fresh:
+                        self.db.upsert_item(uid, tier="fresh")      # check them right away
+                    self.fresh_map = self.db.first_seen()
+                    self.rebalance()
+                    self.discord.new_cards([names[u] for u in fresh], self.plan["fresh_seconds"],
+                                           self.cfg["tiers"])
+                    log.info("NEW %d cards: %s", len(fresh), ", ".join(names[u] for u in fresh[:10]))
                 self.db.put("last_discovery", time.time())
                 self.db.put("discovery_min_ovr", min_ovr)
         self.rebalance()
 
+    def discovery_due(self):
+        """Look for new cards every 6 h, and every 30 min for 3 h after a promo drops."""
+        now = time.time()
+        if now - self.last_discovery_try < 1800:
+            return False
+        if now - float(self.db.get("last_discovery", 0)) > 6 * 3600:
+            return True
+        latest_promo = max((t for t, _ in self.promo_events()), default=0)
+        return now - latest_promo < 3 * 3600
+
+    def fresh_uids(self, items=None, now=None):
+        now = now or time.time()
+        items = items if items is not None else self.db.all_items()
+        return [r for r in items if r["uid"] not in self.watched and
+                analysis.is_fresh(r["name"], self.fresh_map.get(r["uid"]), now, self.cfg)]
+
     def rebalance(self):
         """Keep the polling plan inside the request budget."""
-        total = len(self.db.all_items())
-        self.plan = analysis.plan(self.cfg, len(self.watched), total)
+        items = self.db.all_items()
+        total = len(items)
+        self.fresh_map = self.db.first_seen()
+        n_fresh = len(self.fresh_uids(items))
+        self.plan = analysis.plan(self.cfg, len(self.watched), total, n_fresh)
         demoted = self.db.demote_hot_beyond(self.plan["hot_cap"], time.time())
         p = self.plan
         msg = (f"Budget {p['budget_per_day']:,} req/day | watch {p['watch_load']:,} | "
+               f"new releases {n_fresh} every {p['fresh_seconds'] // 60} min ({p['fresh_load']:,}) | "
                f"cold {p['cold_load']:,} | hot cap {p['hot_cap']} cards | {total:,} cards total")
         log.info("Poll plan: %s%s", msg, f" (demoted {demoted})" if demoted else "")
         if not p["fits"] and self.db.get("warned_plan") != msg:
@@ -131,13 +165,14 @@ class Agent:
             self.last_publish = 0
             log.info("FLIP %s buy<=%s profit=%s", uid, signal.max_buy, signal.profit)
 
+        fresh = analysis.is_fresh(row["name"], self.fresh_map.get(uid), now, self.cfg)
         deal = analysis.live_deal(listings, history, self.cfg, self.tax, now,
                                   sales_24h=parse_volume(data), mutgg_price=parse_price(data))
         if deal:
             key = f"live:{deal.bin_price}:{int(deal.ends)}"
             if not self.db.last_alert(uid, key):
                 self.discord.listing(row["name"] or uid, row["url"], deal, self.cfg["platform"],
-                                     promo_today=self.promo_today())
+                                     promo_today=self.promo_today(), fresh=fresh)
                 self.db.log_alert(uid, key)
                 self.db.log_alert(uid, f"price:{deal.bin_price}")
                 self.db.log_flip(uid, row["name"] or uid, row["url"], deal)
@@ -145,14 +180,14 @@ class Agent:
                 log.info("LISTING %s bin=%s profit=%s", uid, deal.bin_price, deal.profit)
 
         recent = self.db.sales_since(uid, now - 3 * DAY)
-        tier = analysis.tier_for(recent, self.cfg, now, uid in self.watched)
+        tier = analysis.tier_for(recent, self.cfg, now, uid in self.watched, fresh)
         self.db.set_score(uid, sum(p for p, _ in recent) / 3 if recent else 0)
-        self.db.set_schedule(uid, tier, now + analysis.interval_for(tier, self.cfg))
+        self.db.set_schedule(uid, tier, now + analysis.interval_for(tier, self.cfg, self.plan))
         if tier == "hot":
             # Over capacity? The lowest-value hot cards (possibly this one) drop to cold.
             self.db.demote_hot_beyond(self.plan["hot_cap"], now + analysis.interval_for("cold", self.cfg))
             tier = self.db.item(uid)["tier"]
-        if tier in ("watch", "hot") and self.cfg["fetch_mode"] != "extension":
+        if tier in ("watch", "fresh", "hot") and self.cfg["fetch_mode"] != "extension":
             self.ensure_name(self.db.item(uid))
 
     def ensure_name(self, row):
@@ -377,6 +412,11 @@ class Agent:
                   "profit": p.profit, "roi": round(p.roi, 3), "drawdown": round(p.drawdown, 3),
                   "daily_sales": round(p.daily_sales, 1), "record_low": p.record_low}
                  for n, u, p in self.picks]
+        now = time.time()
+        fresh = [{"name": r["name"] or r["uid"], "url": r["url"],
+                  "since": datetime.fromtimestamp(self.fresh_map[r["uid"]]).astimezone().isoformat()}
+                 for r in self.fresh_uids(now=now)]
+        fresh.sort(key=lambda x: x["since"], reverse=True)
         status = self.status
         if self.cfg["fetch_mode"] == "extension":
             if self.feeder_state == "blocked":
@@ -389,6 +429,7 @@ class Agent:
             "status": status,
             "cards_tracked": len(self.db.all_items()),
             "hot_cards": self.db.count_tier("hot"),
+            "new_cards": len(fresh),
             "checks_today": self.checks_today,
             "flips_24h": len(self.db.recent_flips(limit=1000)),
             "invest_picks": len(picks),
@@ -421,6 +462,7 @@ class Agent:
                                     "when": v.published.isoformat() if v.published else None,
                                     "age": v.age} for v in self.videos]},
             "drops": {"text": self.drops or "", "page": market.DROPS_PAGE},
+            "fresh": {"cards": fresh[:40], "every_minutes": self.plan.get("fresh_seconds", 180) // 60},
             "news": {"articles": [{"title": a.title, "url": a.url, "promo": market.is_promo(a.title),
                                    "when": a.published.isoformat()} for a in self.news[:10]]},
         }
@@ -437,7 +479,7 @@ class Agent:
         while True:
             try:
                 with self.lock:
-                    if time.time() - last_sync > 3600:
+                    if time.time() - last_sync > 3600 or self.discovery_due():
                         self.sync_items()
                         last_sync = time.time()
                     self.maybe_digest()
@@ -468,7 +510,7 @@ class Agent:
         """In extension mode, fill full card names (program + OVR) for hot/watch cards, slowly."""
         with self.lock:
             row = self.db.c.execute(
-                "SELECT * FROM items WHERE tier IN ('watch','hot') AND name='' AND url!='' LIMIT 1").fetchone()
+                "SELECT * FROM items WHERE tier IN ('watch','fresh','hot') AND name='' AND url!='' LIMIT 1").fetchone()
         if not row:
             return
         try:

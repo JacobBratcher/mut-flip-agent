@@ -46,10 +46,11 @@ Runs 24/7 as a Home Assistant add-on or a plain Docker container. Data access is
 | Tier | Which cards | Default interval |
 |---|---|---|
 | watch | Your `watchlist` | 2 min |
+| new release | Cards that just came out: first 48 h (`fresh_hours`), or 7 days for LTD / Champions (`fresh_long_hours`) | 3 min |
 | hot | Worth ≥ 25k and ≥ 5 sales/day | 10 min |
 | cold | Everything else | 24 h |
 
-Cards at `min_ovr` (default 85) and up are discovered every 6 hours from mut.gg's player list (about 300 cards at 85+). Set `min_ovr: 0` to track everything.
+Cards at `min_ovr` (default 85) and up are discovered from mut.gg's player list (about 300 cards at 85+) every 6 hours, and every 30 minutes for 3 hours after a promo is announced, because mistake listings way under value are most common right after a drop. New cards get a 🆕 Discord message and go straight into the new-release lane. With a huge drop, each new card is checked a little less often (they get up to 60% of the budget) so the rest of the market isn't starved. Set `min_ovr: 0` to track everything.
 
 **Poll budget (default 20 requests/min):** about 24,000 requests/day after 15% headroom. With ~420 cards at 83+, every card gets checked at least daily, and the top 168 by coins traded per day get checked every 10 minutes. Weaker hot cards drop to cold automatically. The agent honors `Retry-After` and backs off on refusals.
 
@@ -75,9 +76,11 @@ irm https://raw.githubusercontent.com/JacobBratcher/mut-flip-agent/main/extensio
 It asks for the agent URL (`http://<HA IP>:8099`) and the add-on's `feeder_token`, checks that it can reach the agent, and then:
 - installs Chromium (regular Chrome no longer allows auto-loading a local extension),
 - downloads and pre-configures the extension,
-- adds a startup shortcut, turns off sleep while plugged in, and launches it.
+- runs it **hidden** (not in the taskbar) and restarts it if it closes, starts it at every sign-in, and turns off sleep while plugged in.
 
-Re-run it any time to update. Over RDP, **disconnect** when you leave, don't sign out.
+It's a normal Chromium window, just hidden: headless Chrome identifies itself as HeadlessChrome and mut.gg blocks it. Double-click **MUT Flip Feeder** on the desktop to show the window, and again to hide it.
+
+Re-run it any time to update (it remembers the URL and token). Over RDP, **disconnect** when you leave, don't sign out.
 
 Manual install instead: `chrome://extensions` → Developer mode → **Load unpacked** → `extension/` → Settings → enter the URL and token → Start.
 
@@ -86,7 +89,7 @@ Manual install instead: `chrome://extensions` → Developer mode → **Load unpa
 ## Home Assistant sensors
 
 Via MQTT discovery (Mosquitto add-on), under a **MUT Flip Agent** device:
-`sensor.mut_flip_agent_status`, `_cards_tracked`, `_hot_cards`, `_checks_today`, `_flips_24h` (recent flips in the `flips` attribute), `_invest_picks` (picks in the `picks` attribute), `_last_price_update`.
+`sensor.mut_flip_agent_status`, `_cards_tracked`, `_hot_cards`, `_new_cards` (new releases being watched, in the `cards` attribute), `_checks_today`, `_flips_24h` (recent flips in the `flips` attribute), `_market_24h`, `_market_7d`, `_twitch_drop`, `_promos_24h`, `_latest_video`, `_last_price_update`.
 
 ## Install: Home Assistant add-on (recommended)
 

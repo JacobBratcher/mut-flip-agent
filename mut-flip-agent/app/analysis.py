@@ -220,9 +220,21 @@ def invest_signal(history, cfg, tax, now) -> Invest | None:
                   daily_sales, current <= min(daily) * 1.02, roi * liquidity)
 
 
-def tier_for(history, cfg, now, watched):
+def is_fresh(name, first_seen, now, cfg):
+    """A newly released card still in its fast-lane window (LTD/Champions get longer)."""
+    if not first_seen:
+        return False
+    t = cfg["tiers"]
+    long = any(w.lower() in (name or "").lower() for w in t.get("fresh_long_names", []))
+    hours = t.get("fresh_long_hours", 168) if long else t.get("fresh_hours", 48)
+    return now - first_seen < hours * HOUR
+
+
+def tier_for(history, cfg, now, watched, fresh=False):
     if watched:
         return "watch"
+    if fresh:
+        return "fresh"
     t = cfg["tiers"]
     recent = [p for p, ts in history if ts >= now - 3 * DAY]
     if not recent:
@@ -233,28 +245,38 @@ def tier_for(history, cfg, now, watched):
     return "cold"
 
 
-def interval_for(tier, cfg):
+def interval_for(tier, cfg, plan=None):
     t = cfg["tiers"]
-    return {"watch": t["watch_minutes"] * 60, "hot": t["hot_minutes"] * 60}.get(
+    fresh = (plan or {}).get("fresh_seconds") or t.get("fresh_minutes", 3) * 60
+    return {"watch": t["watch_minutes"] * 60, "fresh": fresh, "hot": t["hot_minutes"] * 60}.get(
         tier, t["cold_hours"] * 3600)
 
 
-def plan(cfg, n_watch, n_total):
+def plan(cfg, n_watch, n_total, n_fresh=0):
     """Request budget per day and how many cards can be 'hot' without starving the rest.
 
+    Watchlist first, then new releases (up to 60% of what's left: a big drop gets each
+    new card checked a little less often instead of starving everything else), then hot.
     Keeps 15% headroom for retries, discovery and name lookups.
     """
     t = cfg["tiers"]
     budget = cfg["requests_per_minute"] * 1440 * 0.85
     watch_load = n_watch * 1440 / t["watch_minutes"]
+    fresh_minutes = t.get("fresh_minutes", 3)
+    room = max(0.0, budget - watch_load) * 0.6
+    if n_fresh:
+        fresh_minutes = max(fresh_minutes, n_fresh * 1440 / room) if room else t["cold_hours"] * 60
+    fresh_load = n_fresh * 1440 / fresh_minutes
     cold_each = 24 / t["cold_hours"]
-    cold_load = max(0, n_total - n_watch) * cold_each
+    cold_load = max(0, n_total - n_watch - n_fresh) * cold_each
     hot_extra_each = 1440 / t["hot_minutes"] - cold_each
-    spare = budget - watch_load - cold_load
+    spare = budget - watch_load - fresh_load - cold_load
     hot_cap = max(0, int(spare // hot_extra_each)) if hot_extra_each > 0 else 0
     return {
         "budget_per_day": int(budget),
         "watch_load": int(watch_load),
+        "fresh_load": int(fresh_load),
+        "fresh_seconds": int(fresh_minutes * 60),
         "cold_load": int(cold_load),
         "hot_cap": hot_cap,
         "fits": spare >= 0,

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     uid TEXT, kind TEXT, sent_at REAL
 );
 CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS seen (uid TEXT PRIMARY KEY, first_seen REAL);  -- 0 = was already out
 CREATE TABLE IF NOT EXISTS flips (
     ts REAL, uid TEXT, name TEXT, url TEXT, buy INTEGER, max_buy INTEGER,
     market INTEGER, profit INTEGER, roi REAL, falling INTEGER, ends REAL,
@@ -56,6 +57,10 @@ class DB:
             if col not in fcols:
                 self.c.execute(f"ALTER TABLE flips ADD COLUMN {col} {typ}")
         self.c.commit()
+        if not self.c.execute("SELECT 1 FROM seen LIMIT 1").fetchone():
+            # Everything tracked before this existed counts as already released.
+            self.c.execute("INSERT OR IGNORE INTO seen SELECT uid, 0 FROM items")
+            self.c.commit()
         if self.get("sales_deduped") is None:
             # Snipes logged before this were priced off duplicated sales: drop them too.
             self.c.execute("DELETE FROM flips")
@@ -75,14 +80,14 @@ class DB:
         return self.c.execute("SELECT * FROM items WHERE uid=?", (uid,)).fetchone()
 
     def next_due(self):
-        order = "CASE tier WHEN 'watch' THEN 0 WHEN 'hot' THEN 1 WHEN 'new' THEN 2 ELSE 3 END"
+        order = "CASE tier WHEN 'watch' THEN 0 WHEN 'fresh' THEN 0 WHEN 'hot' THEN 1 WHEN 'new' THEN 2 ELSE 3 END"
         return self.c.execute(
             f"SELECT * FROM items WHERE next_check<=? ORDER BY {order}, next_check LIMIT 1",
             (time.time(),)).fetchone()
 
     def lease_due(self, n, lease_seconds):
         """Hand out up to n due items and hold them for lease_seconds so they aren't reissued."""
-        order = "CASE tier WHEN 'watch' THEN 0 WHEN 'hot' THEN 1 WHEN 'new' THEN 2 ELSE 3 END"
+        order = "CASE tier WHEN 'watch' THEN 0 WHEN 'fresh' THEN 0 WHEN 'hot' THEN 1 WHEN 'new' THEN 2 ELSE 3 END"
         now = time.time()
         rows = self.c.execute(
             f"SELECT * FROM items WHERE next_check<=? ORDER BY {order}, next_check LIMIT ?",
@@ -124,6 +129,21 @@ class DB:
     def set_name(self, uid, name):
         self.c.execute("UPDATE items SET name=? WHERE uid=?", (name, uid))
         self.c.commit()
+
+    def mark_seen(self, uids, now, baseline=False):
+        """Record when cards first appeared; returns the ones that are new releases.
+        baseline: first discovery or a changed OVR filter, so nothing counts as new."""
+        known = {r["uid"] for r in self.c.execute("SELECT uid FROM seen")}
+        new = [u for u in uids if u not in known]
+        self.c.executemany("INSERT OR IGNORE INTO seen VALUES(?,?)",
+                           [(u, 0 if baseline else now) for u in new])
+        self.c.commit()
+        return [] if baseline else new
+
+    def first_seen(self):
+        """{uid: unix time it first appeared} for new releases (cards already out are left out)."""
+        return {r["uid"]: r["first_seen"] for r in
+                self.c.execute("SELECT uid, first_seen FROM seen WHERE first_seen > 0")}
 
     def all_items(self):
         return self.c.execute("SELECT * FROM items").fetchall()

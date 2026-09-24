@@ -177,3 +177,58 @@ def test_existing_duplicates_are_cleaned_up_once(tmp_path, monkeypatch):
     agent.db.c.commit()
     agent2 = main.Agent(DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False})
     assert sorted(p for p, _ in agent2.db.sales_since("27-1", 0)) == [128_800, 189_600, 189_600]
+
+
+class DropAPI(FakeAPI):
+    def __init__(self):
+        super().__init__()
+        self.cards = [(f"27-{i}", f"https://www.mut.gg/players/{i}-p/27-{i}/", f"Player {i} Legends 86 OVR")
+                      for i in range(5)]
+
+    def discover(self, min_ovr=0):
+        return list(self.cards)
+
+
+def test_new_release_goes_in_the_fast_lane(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    agent = main.Agent(DEFAULTS | {"discord_webhook_url": "x", "min_ovr": 85})
+
+    class Disc(FakeDiscord):
+        def __init__(self):
+            super().__init__(); self.drops = []
+        def new_cards(self, names, every, tiers):
+            self.drops.append(names)
+
+    agent.api, agent.discord = DropAPI(), Disc()
+    agent.sync_items()                                  # first discovery: all already out
+    assert agent.discord.drops == [] and agent.fresh_uids() == []
+
+    agent.api.cards.append(("27-99", "https://www.mut.gg/players/99-new/27-99/", "New Guy LTD 91 OVR"))
+    agent.last_discovery_try = 0
+    agent.db.put("last_discovery", 0)
+    agent.sync_items()
+    assert agent.discord.drops == [["New Guy LTD 91 OVR"]]
+    assert agent.db.item("27-99")["tier"] == "fresh" and agent.db.lease_due(1, 60)[0]["uid"] == "27-99"
+
+    agent.process(agent.db.item("27-99"), {"pricesData": {"completedAuctions": []}})
+    row = agent.db.item("27-99")
+    assert row["tier"] == "fresh" and row["next_check"] - row["last_check"] <= 180 + 1
+
+    # A dropped-and-rediscovered card isn't "new" again.
+    agent.api.cards = [c for c in agent.api.cards if c[0] != "27-0"]
+    agent.last_discovery_try = 0; agent.db.put("last_discovery", 0); agent.sync_items()
+    agent.api.cards.append(("27-0", "https://www.mut.gg/players/0-p/27-0/", "Player 0 Legends 86 OVR"))
+    agent.last_discovery_try = 0; agent.db.put("last_discovery", 0); agent.sync_items()
+    assert len(agent.discord.drops) == 1
+
+
+def test_discovery_runs_often_right_after_a_promo(tmp_path, monkeypatch):
+    import json, time
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    agent = main.Agent(DEFAULTS | {"discord_webhook_url": "x"})
+    agent.db.put("last_discovery", time.time() - 3600)
+    assert not agent.discovery_due()
+    agent.db.put("promo_events", json.dumps([[time.time() - 1200, "Team of the Week 3"]]))
+    assert agent.discovery_due()
+    agent.last_discovery_try = time.time() - 600          # tried 10 min ago: wait
+    assert not agent.discovery_due()

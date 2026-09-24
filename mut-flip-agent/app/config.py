@@ -39,6 +39,9 @@ DEFAULTS = {
     "tiers": {
         "watch_minutes": 2, "hot_minutes": 10, "cold_hours": 24,
         "hot_min_value": 25000, "hot_min_daily_sales": 5,
+        # New releases: mistake listings way under value are most common right after a drop.
+        "fresh_minutes": 3, "fresh_hours": 48,
+        "fresh_long_hours": 168, "fresh_long_names": ["LTD", "Limited", "Champion"],
     },
     "tax_rate": 0.10,
 }

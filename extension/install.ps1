@@ -5,8 +5,23 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+$root = Join-Path $env:LOCALAPPDATA 'MUTFlipFeeder'
+$ext = Join-Path $root 'extension'
+$profileDir = Join-Path $root 'profile'
+$utf8 = New-Object System.Text.UTF8Encoding $false
+
 $AgentUrl = $env:MUT_AGENT_URL
 $Token = $env:MUT_FEEDER_TOKEN
+# Re-running? Reuse the URL and token from the last install.
+$saved = Join-Path $ext 'config.json'
+if ((-not $AgentUrl -or -not $Token) -and (Test-Path $saved)) {
+    try {
+        $old = [IO.File]::ReadAllText($saved) | ConvertFrom-Json
+        if (-not $AgentUrl) { $AgentUrl = $old.agentUrl }
+        if (-not $Token) { $Token = $old.token }
+        Write-Host "Using saved agent URL $AgentUrl"
+    } catch { }
+}
 if (-not $AgentUrl) { $AgentUrl = Read-Host 'Agent URL (http://<Home Assistant IP>:8099)' }
 if (-not $Token) { $Token = Read-Host 'Feeder token' }
 $AgentUrl = $AgentUrl.Trim().TrimEnd('/')
@@ -14,11 +29,6 @@ if ($AgentUrl -notmatch '^https?://') { $AgentUrl = "http://$AgentUrl" }
 $uri = [Uri]$AgentUrl
 if (-not $uri.IsDefaultPort -or $AgentUrl -match ':\d+$') { } else { $AgentUrl = "$AgentUrl`:8099"; $uri = [Uri]$AgentUrl }
 $origin = $uri.GetLeftPart([UriPartial]::Authority) + '/*'
-
-$root = Join-Path $env:LOCALAPPDATA 'MUTFlipFeeder'
-$ext = Join-Path $root 'extension'
-$profileDir = Join-Path $root 'profile'
-$utf8 = New-Object System.Text.UTF8Encoding $false
 
 # 1. Check the agent is reachable before doing anything else.
 Write-Host "Checking agent at $AgentUrl ..."
@@ -53,8 +63,8 @@ Write-Host "  Chromium: $chrome" -ForegroundColor Green
 # Killing the parent takes its renderer children with it, so by the time the loop
 # reaches those they are already gone - never treat that as a failure.
 try {
-    $stale = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like '*MUTFlipFeeder*' })
+    $stale = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in 'chrome.exe', 'powershell.exe' -and $_.CommandLine -like '*MUTFlipFeeder*' -and $_.ProcessId -ne $PID })
     foreach ($p in $stale) {
         try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
     }
@@ -87,10 +97,10 @@ $manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
 $manifest.host_permissions = @($manifest.host_permissions) + $origin
 [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 10), $utf8)
 
-# 6. Launcher: dedicated profile, starts minimized, keeps running when RDP disconnects.
+# 6. Launcher: a normal Chromium window, hidden so it's not in the taskbar.
 # (Not headless: headless Chrome identifies itself as HeadlessChrome and mut.gg blocks it.)
+# A small keeper script starts the feeder, hides its windows, and restarts it if it closes.
 $flags = @(
-    '--start-minimized',
     "--user-data-dir=`"$profileDir`"",
     "--load-extension=`"$ext`"",
     '--no-first-run', '--no-default-browser-check',
@@ -99,21 +109,120 @@ $flags = @(
     '--disable-backgrounding-occluded-windows',
     'https://www.mut.gg/'
 ) -join ' '
+
+$winCs = @'
+using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
+public static class FeederWin {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr h);
+    // Hide the visible browser windows of these processes (hidden windows leave the taskbar).
+    public static long[] Hide(uint[] pids) {
+        List<long> hidden = new List<long>();
+        EnumWindows(delegate (IntPtr h, IntPtr l) {
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            if (!IsWindowVisible(h) || Array.IndexOf(pids, pid) < 0 || GetWindowTextLength(h) == 0) return true;
+            StringBuilder cls = new StringBuilder(64);
+            GetClassName(h, cls, 64);
+            if (cls.ToString() == "Chrome_WidgetWin_1") { ShowWindow(h, 0); hidden.Add(h.ToInt64()); }
+            return true;
+        }, IntPtr.Zero);
+        return hidden.ToArray();
+    }
+    public static void Show(long[] handles) {
+        foreach (long v in handles) { IntPtr h = new IntPtr(v); if (IsWindow(h)) ShowWindow(h, 9); }
+    }
+}
+'@
+
+$keeperPs = @'
+# MUT Flip Feeder keeper: runs the feeder Chromium hidden (not in the taskbar) and restarts
+# it if it closes. Double-click "MUT Flip Feeder" on the desktop to show or hide it.
+$ErrorActionPreference = 'SilentlyContinue'
+$chrome = '__CHROME__'
+$flags = '__FLAGS__'
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$showFlag = Join-Path $here 'show.flag'
+$hiddenList = Join-Path $here 'hidden.txt'
+Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $here 'win.cs')))
+Remove-Item $showFlag -ErrorAction SilentlyContinue
+$pids = @(); $nextScan = 0
+while ($true) {
+    if ((Get-Date).Ticks -ge $nextScan) {
+        $pids = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" |
+            Where-Object { $_.CommandLine -like '*MUTFlipFeeder*' } | ForEach-Object { [uint32]$_.ProcessId })
+        if (-not $pids.Count) {
+            Start-Process -FilePath $chrome -ArgumentList $flags -WindowStyle Minimized
+            Start-Sleep -Seconds 3
+            $nextScan = 0
+            continue
+        }
+        $nextScan = (Get-Date).AddSeconds(15).Ticks
+    }
+    if (-not (Test-Path $showFlag)) {
+        $h = [FeederWin]::Hide([uint32[]]$pids)
+        if ($h.Count) {
+            $all = @(Get-Content $hiddenList -ErrorAction SilentlyContinue) + @($h | ForEach-Object { "$_" })
+            $all | Select-Object -Unique | Select-Object -Last 50 | Set-Content $hiddenList
+        }
+    }
+    Start-Sleep -Seconds 2
+}
+'@
+
+$togglePs = @'
+# Show the hidden MUT Flip Feeder window, or hide it again.
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$showFlag = Join-Path $here 'show.flag'
+if (Test-Path $showFlag) { Remove-Item $showFlag; exit }   # the keeper hides it again within 2 s
+New-Item -ItemType File $showFlag -Force | Out-Null
+Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $here 'win.cs')))
+$handles = @(Get-Content (Join-Path $here 'hidden.txt') -ErrorAction SilentlyContinue | ForEach-Object { [int64]$_ })
+[FeederWin]::Show([int64[]]$handles)
+'@
+
+function Write-HiddenRunner($vbsPath, $ps1Path) {
+    # wscript starts PowerShell with no console window at all (not even a flash).
+    $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """"$ps1Path"""""
+    [IO.File]::WriteAllText($vbsPath, "CreateObject(""WScript.Shell"").Run ""$cmd"", 0, False`r`n", $utf8)
+}
+
+$keeper = Join-Path $root 'feeder.ps1'
+$toggle = Join-Path $root 'toggle.ps1'
+[IO.File]::WriteAllText((Join-Path $root 'win.cs'), $winCs, $utf8)
+$keeperText = $keeperPs.Replace('__CHROME__', $chrome.Replace("'", "''")).Replace('__FLAGS__', $flags.Replace("'", "''"))
+[IO.File]::WriteAllText($keeper, $keeperText, $utf8)
+[IO.File]::WriteAllText($toggle, $togglePs, $utf8)
+Write-HiddenRunner (Join-Path $root 'feeder.vbs') $keeper
+Write-HiddenRunner (Join-Path $root 'toggle.vbs') $toggle
+
 $shell = New-Object -ComObject WScript.Shell
-foreach ($dir in @([Environment]::GetFolderPath('Startup'), [Environment]::GetFolderPath('Desktop'))) {
-    $lnk = $shell.CreateShortcut((Join-Path $dir 'MUT Flip Feeder.lnk'))
-    $lnk.TargetPath = $chrome
-    $lnk.Arguments = $flags
-    $lnk.WorkingDirectory = Split-Path $chrome
-    $lnk.Description = 'MUT Flip Feeder (mut.gg prices -> Home Assistant)'
-    $lnk.WindowStyle = 7   # minimized
+$wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+$shortcuts = @(
+    @{ Dir = [Environment]::GetFolderPath('Startup'); Vbs = 'feeder.vbs'; Desc = 'MUT Flip Feeder (runs hidden at sign-in)' },
+    @{ Dir = [Environment]::GetFolderPath('Desktop'); Vbs = 'toggle.vbs'; Desc = 'Show or hide the MUT Flip Feeder window' }
+)
+foreach ($s in $shortcuts) {
+    $lnk = $shell.CreateShortcut((Join-Path $s.Dir 'MUT Flip Feeder.lnk'))
+    $lnk.TargetPath = $wscript
+    $lnk.Arguments = "`"$(Join-Path $root $s.Vbs)`""
+    $lnk.WorkingDirectory = $root
+    $lnk.IconLocation = "$chrome,0"
+    $lnk.Description = $s.Desc
     $lnk.Save()
 }
 
 # 7. Don't let the PC sleep while plugged in (the feeder stops if it sleeps).
 try { powercfg /change standby-timeout-ac 0 | Out-Null; powercfg /change hibernate-timeout-ac 0 | Out-Null } catch { }
 
-Start-Process -FilePath $chrome -ArgumentList $flags -WindowStyle Minimized
+Start-Process -FilePath $wscript -ArgumentList "`"$(Join-Path $root 'feeder.vbs')`""
 Write-Host ''
-Write-Host 'Done. The MUT Flip Feeder is running minimized in the taskbar and starts itself at every sign-in.' -ForegroundColor Green
-Write-Host 'Leave it running. When you leave RDP, close the RDP window (disconnect), do NOT sign out.'
+Write-Host 'Done. The MUT Flip Feeder is running hidden (not in the taskbar), restarts itself if it closes,' -ForegroundColor Green
+Write-Host 'and starts at every sign-in. Double-click "MUT Flip Feeder" on the desktop to show or hide it.' -ForegroundColor Green
+Write-Host 'When you leave RDP, close the RDP window (disconnect), do NOT sign out.'
