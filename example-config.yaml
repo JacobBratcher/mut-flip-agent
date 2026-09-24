@@ -9,7 +9,7 @@ watchlist:
   # Paste mut.gg player URLs. These get checked every few minutes.
   - https://www.mut.gg/players/12562-tj-watt/27-162004004/
 discover_all_players: true
-min_ovr: 83                       # only track cards at this overall or higher (0 = all)
+min_ovr: 85                       # only track cards at this overall or higher (0 = all)
 flip:
   min_profit: 10000
   min_roi: 0.08

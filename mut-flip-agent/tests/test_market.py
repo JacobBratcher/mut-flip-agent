@@ -227,6 +227,9 @@ def test_weekday_pattern_needs_two_weeks_and_finds_cheap_day():
     assert min(w, key=w.get) == 1 and round(w[1], 2) == -0.10
     short = [(u, n, url, [s for s in sales if s[1] > NOW - 6 * D]) for u, n, url, sales in cards]
     assert market.weekday_pattern(short, NOW) == {}
+    # 10 days: every weekday present, but most only once -> still not enough to call a pattern
+    ten = [(u, n, url, [s for s in sales if s[1] > NOW - 10 * D]) for u, n, url, sales in cards]
+    assert market.weekday_pattern(ten, NOW) == {}
 
 
 def test_parse_article_date():
@@ -320,3 +323,9 @@ def test_promo_filter_and_schedule_from_real_releases():
     assert all(p != "Game Time" for p, _, _ in sched)              # seen once: not a pattern
     tips = market.timing_tips(datetime(2026, 10, 6, 20), False, schedule=sched)   # a Tuesday
     assert tips[0].startswith("Tomorrow (Wed): Team of the Week ~10:47 AM")
+
+
+def test_video_sensor_is_registered():
+    from app import ha
+    keys = [k for k, *_ in ha.SENSORS]
+    assert "latest_video" in keys and "promos_24h" in keys and "invest_picks" not in keys

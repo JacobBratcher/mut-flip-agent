@@ -47,7 +47,7 @@ Runs 24/7 as a Home Assistant add-on or a plain Docker container. Data access is
 | hot | Worth ≥ 25k and ≥ 5 sales/day | 10 min |
 | cold | Everything else | 24 h |
 
-Cards at `min_ovr` (default 83) and up are discovered every 6 hours from mut.gg's player list (about 420 cards). Set `min_ovr: 0` to track everything.
+Cards at `min_ovr` (default 85) and up are discovered every 6 hours from mut.gg's player list (about 300 cards at 85+). Set `min_ovr: 0` to track everything.
 
 **Poll budget (default 20 requests/min):** about 24,000 requests/day after 15% headroom. With ~420 cards at 83+, every card gets checked at least daily, and the top 168 by coins traded per day get checked every 10 minutes. Weaker hot cards drop to cold automatically. The agent honors `Retry-After` and backs off on refusals.
 

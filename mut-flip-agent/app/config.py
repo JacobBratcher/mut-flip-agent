@@ -18,7 +18,7 @@ DEFAULTS = {
     "requests_per_minute": 20,
     "watchlist": [],
     "discover_all_players": True,
-    "min_ovr": 83,
+    "min_ovr": 85,
     "flip": {
         "min_profit": 10000, "min_roi": 0.08, "min_discount": 0.12,
         "lookback_hours": 168, "min_sales": 3, "alert_cooldown_hours": 6, "sale_alerts": False,

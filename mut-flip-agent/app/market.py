@@ -185,7 +185,7 @@ def promo_reactions(cards, promos, now):
 def weekday_pattern(cards, now, days=28):
     """Median price by weekday relative to each card's own weekly level, across cards.
     Returns {0..6: deviation} only with 2+ weeks of data; Mon=0."""
-    by_day = {}
+    by_day, dates = {}, {}
     for _uid, _name, _url, sales in cards:
         daily = {}
         for p, t in sales:
@@ -197,7 +197,10 @@ def weekday_pattern(cards, now, days=28):
             if len(around) >= 5:
                 wd = datetime.fromtimestamp(d * DAY).weekday()
                 by_day.setdefault(wd, []).append(m / median(around) - 1)
-    if not by_day or min(len(v) for v in by_day.values()) < 20 or len(by_day) < 7:
+                dates.setdefault(wd, set()).add(d)
+    # every weekday must have been seen on 2+ different dates (i.e. 2+ weeks), by 20+ cards
+    if (len(by_day) < 7 or min(len(v) for v in by_day.values()) < 20
+            or min(len(v) for v in dates.values()) < 2):
         return {}
     return {wd: median(v) for wd, v in by_day.items()}
 

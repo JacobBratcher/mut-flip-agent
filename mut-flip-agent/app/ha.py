@@ -27,6 +27,7 @@ SENSORS = [
     ("twitch_drop", "Twitch drop", "mdi:twitch", {"json_attributes_topic": f"{PREFIX}/drops"}),
     ("promos_24h", "New on mut.gg 24h", "mdi:newspaper-variant-outline",
      {"state_class": "measurement", "json_attributes_topic": f"{PREFIX}/news"}),
+    ("latest_video", "Latest MUT video", "mdi:youtube", {"json_attributes_topic": f"{PREFIX}/youtube"}),
     ("last_price_update", "Last price update", "mdi:clock-check-outline", {"device_class": "timestamp"}),
 ]
 
