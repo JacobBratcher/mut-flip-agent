@@ -22,6 +22,8 @@ DEFAULTS = {
     "flip": {
         "min_profit": 10000, "min_roi": 0.08, "min_discount": 0.12,
         "lookback_hours": 168, "min_sales": 3, "alert_cooldown_hours": 6, "sale_alerts": False,
+        "min_sales_24h": 3, "max_drop": 0.15, "safe_sales_24h": 8, "safe_roi": 0.15,
+        "only_safe": False,
         "max_buy_budget": 0,
     },
     "invest": {
@@ -31,8 +33,9 @@ DEFAULTS = {
     },
     "market": {
         "report": True, "report_hour": 9, "alert_pct": 8,
-        "news": True, "twitch_drops": True,
+        "news": True, "twitch_drops": True, "program_alert_pct": 15,
     },
+    "youtube_channels": ["@GutFoxx"],
     "tiers": {
         "watch_minutes": 2, "hot_minutes": 10, "cold_hours": 24,
         "hot_min_value": 25000, "hot_min_daily_sales": 5,

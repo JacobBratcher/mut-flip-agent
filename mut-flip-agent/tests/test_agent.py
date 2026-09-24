@@ -85,7 +85,7 @@ def test_listing_then_sale_alerts_once(tmp_path, monkeypatch):
     class Disc(FakeDiscord):
         def __init__(self):
             super().__init__(); self.listings = []
-        def listing(self, name, url, d, platform):
+        def listing(self, name, url, d, platform, **kw):
             self.listings.append(d)
 
     agent.discord = Disc()
@@ -110,7 +110,7 @@ def test_snipes_only_by_default(tmp_path, monkeypatch):
     class Disc(FakeDiscord):
         def __init__(self):
             super().__init__(); self.listings = []
-        def listing(self, name, url, d, platform):
+        def listing(self, name, url, d, platform, **kw):
             self.listings.append(d)
 
     agent.discord = Disc()

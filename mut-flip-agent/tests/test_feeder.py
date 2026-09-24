@@ -13,7 +13,7 @@ class Disc(FakeDiscord):
         super().__init__()
         self.listings = []
 
-    def listing(self, name, url, d, platform):
+    def listing(self, name, url, d, platform, **kw):
         self.listings.append((name, d))
 
 

@@ -16,6 +16,11 @@ def _pct(x):
     return "n/a" if x is None else f"{x * 100:+.1f}%"
 
 
+def _is_market(title):
+    from .youtube import is_market_video
+    return is_market_video(title)
+
+
 def verdict(change, threshold):
     """Plain-language read of a 24h market move."""
     if change is None:
@@ -77,19 +82,30 @@ class Discord:
             embed["url"] = url
         self.send([embed])
 
-    def listing(self, name, url, d, platform):
-        warn = "\n⚠️ Market is sliding. Resell quickly or skip." if d.falling else ""
+    def listing(self, name, url, d, platform, promo_today=False):
+        safe = getattr(d, "grade", "good") == "safe"
+        badge = "🟢 SAFE" if safe else "🟡 GOOD"
+        trend = getattr(d, "trend", None)
+        trend_txt = "n/a" if trend is None else f"{trend * 100:+.0f}% vs yesterday"
+        tips = []
+        if d.falling:
+            tips.append("⚠️ Sellers are undercutting: list right away.")
+        if promo_today:
+            tips.append("Promo day: if it doesn't sell at the list price today, hold it for "
+                        "tomorrow's bounce instead of dumping it.")
         embed = {
-            "title": f"🎯 Snipe: {name}",
-            "color": RED,
-            "description": (f"Buy Now **{coins(d.bin_price)}**, {d.discount:.0%} under market. "
-                            f"Ends <t:{int(d.ends)}:R>.{warn}"),
+            "title": f"🎯 {badge}: {name}",
+            "color": GREEN if safe else GOLD,
+            "description": (f"**Buy Now ≤ {coins(d.max_buy)}** (listed at {coins(d.bin_price)}) → "
+                            f"**list at {coins(d.market)}** → **+{coins(d.profit)}** after tax "
+                            f"({d.roi:.0%}). Ends <t:{int(d.ends)}:R>."
+                            + ("\n" + "\n".join(tips) if tips else "")),
             "fields": [
-                {"name": "Buy Now", "value": coins(d.bin_price), "inline": True},
-                {"name": "Resell around", "value": coins(d.market), "inline": True},
-                {"name": "Profit after tax", "value": f"{coins(d.profit)} ({d.roi:.0%})", "inline": True},
+                {"name": "Sells", "value": f"~{getattr(d, 'sales_24h', 0)}/day", "inline": True},
+                {"name": "Trend", "value": trend_txt, "inline": True},
+                {"name": "Resale based on", "value": d.basis, "inline": True},
             ],
-            "footer": {"text": f"{platform.upper()} • live listing • resale based on {d.basis}"},
+            "footer": {"text": f"{platform.upper()} • live listing"},
         }
         if url:
             embed["url"] = url
@@ -163,28 +179,67 @@ class Discord:
         }], content="@here")
 
 
-    def market_report(self, move, news, drops, snipes, platform, threshold=0.08):
-        promos = [a for a in news]
-        promo_text = "\n".join(f"[{a.title}]({a.url})" for a in promos[:6]) or "None in the last 24h"
+    def market_report(self, move, news, drops, snipes, platform, threshold=0.08,
+                      tips=(), videos=()):
+        promo_text = "\n".join(f"[{a.title}]({a.url})" for a in news[:6]) or "None in the last 24h"
         if snipes:
             best = max(snipes, key=lambda r: r["profit"])
-            snipe_text = (f"{len(snipes)} found, {coins(sum(r['profit'] for r in snipes))} total profit\n"
+            safe = sum(1 for r in snipes if (r["grade"] or "good") == "safe")
+            snipe_text = (f"{len(snipes)} found ({safe} safe), "
+                          f"{coins(sum(r['profit'] for r in snipes))} total profit\n"
                           f"Best: [{best['name']}]({best['url']}) +{coins(best['profit'])}")
         else:
             snipe_text = "None in the last 24h"
+        progs = move.programs
+        prog_text = "\n".join(f"{p.program}: {p.change * 100:+.0f}% ({p.cards} cards)"
+                               for p in (progs[:3] + [p for p in progs[-3:] if p not in progs[:3]])
+                               ) or "Not enough data yet"
+        breadth = ("" if move.breadth_down is None
+                   else f" · {move.breadth_down:.0%} of cards down 10%+")
+        fields = [
+            {"name": "Market 24h", "value": _pct(move.change_24h) + breadth, "inline": True},
+            {"name": "Market 7d", "value": _pct(move.change_7d), "inline": True},
+            {"name": "By program", "value": prog_text[:1024]},
+            {"name": "Biggest drops", "value": _movers(move.fallers)[:1024]},
+            {"name": "Biggest gains", "value": _movers(move.risers)[:1024]},
+            {"name": "What to do today", "value": ("\n".join(f"• {t}" for t in tips) or "Nothing special")[:1024]},
+            {"name": "New on mut.gg", "value": promo_text[:1024]},
+        ]
+        if videos:
+            fields.append({"name": "From MUT YouTubers", "value": "\n".join(
+                f"{'💰 ' if _is_market(v.title) else ''}[{v.channel}: {v.title}]({v.url})"
+                for v in videos)[:1024]})
+        fields += [
+            {"name": "Twitch drops", "value": drops or "None live"},
+            {"name": "Snipes", "value": snipe_text},
+        ]
         self.send([{
             "title": "📊 Daily MUT market report",
             "color": BLUE,
             "description": f"**{verdict(move.change_24h, threshold)}**",
-            "fields": [
-                {"name": "Market 24h", "value": _pct(move.change_24h), "inline": True},
-                {"name": "Market 7d", "value": _pct(move.change_7d), "inline": True},
-                {"name": "Cards measured", "value": str(move.cards_24h), "inline": True},
-                {"name": "Biggest drops", "value": _movers(move.fallers)},
-                {"name": "Biggest gains", "value": _movers(move.risers)},
-                {"name": "New on mut.gg", "value": promo_text[:1024]},
-                {"name": "Twitch drops", "value": drops or "None live"},
-                {"name": "Snipes", "value": snipe_text},
-            ],
+            "fields": fields,
             "footer": {"text": f"{platform.upper()} • daily report"},
+        }])
+
+    def program_alert(self, kind, prog, move, platform):
+        down = kind == "crash"
+        cards = [m for m in (move.fallers if down else move.risers)]
+        self.send([{
+            "title": (f"📉 {prog.program} crashing: {prog.change * 100:+.0f}%" if down
+                      else f"📈 {prog.program} spiking: {prog.change * 100:+.0f}%"),
+            "color": RED if down else GREEN,
+            "description": (f"Median change across {prog.cards} {prog.program} cards since yesterday "
+                            f"(whole market {_pct(move.change_24h)}). "
+                            + ("Buy the dip only if you'll hold a day or two; don't snipe-and-relist into a slide."
+                               if down else "Good time to sell any of these you own.")),
+            "footer": {"text": f"{platform.upper()} • program alert"},
+        }], content="@here")
+
+    def video(self, v, market_related):
+        self.send([{
+            "title": f"{'💰' if market_related else '📺'} {v.channel}: {v.title}",
+            "url": v.url,
+            "color": 0xFF0000,
+            "description": ("Market/coins video. Worth a watch." if market_related else None),
+            "footer": {"text": "new upload"},
         }])

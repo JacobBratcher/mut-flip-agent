@@ -34,6 +34,9 @@ class Listing:
     discount: float
     falling: bool
     basis: str = "sales"
+    grade: str = "good"             # "safe" or "good"
+    sales_24h: int = 0              # how fast it resells
+    trend: float | None = None      # latest sales vs. this time yesterday
 
 
 @dataclass
@@ -111,8 +114,23 @@ def flip_signal(new_sales, history, cfg, tax, now, listings=()) -> Flip | None:
     return Flip(buy, int(market), _max_buy(sell_net, f), int(profit), roi, discount, falling, basis)
 
 
+def card_trend(history, now):
+    """Latest sales vs. the same card 24-48h ago (e.g. -0.2 = down 20%).
+    None when either side has too few sales to say."""
+    latest = [p for p, t in sorted(history, key=lambda s: s[1]) if t >= now - DAY][-RECENT_SALES:]
+    before = [p for p, t in history if now - 2 * DAY <= t < now - DAY]
+    if len(latest) < 2 or len(before) < 2:
+        return None
+    return median(latest) / median(before) - 1
+
+
 def live_deal(listings, history, cfg, tax, now) -> Listing | None:
-    """Cheapest active Buy Now listing that clears the flip rules."""
+    """Cheapest active Buy Now listing that clears the flip rules, graded for safety.
+
+    Skips cards that don't resell fast enough (min_sales_24h) and falling knives
+    (down max_drop or more since yesterday: the "resale" price is still sliding).
+    Safe = liquid, flat or rising, and a fat margin.
+    """
     f = cfg["flip"]
     if len(history) < f["min_sales"]:
         return None
@@ -127,8 +145,18 @@ def live_deal(listings, history, cfg, tax, now) -> Listing | None:
     profit, roi, discount = sell_net - price, (sell_net - price) / price, 1 - price / market
     if not _passes(profit, roi, discount, price, f):
         return None
+    sales_24h = sum(1 for _, t in history if t >= now - DAY)
+    if sales_24h < f.get("min_sales_24h", 0):
+        return None
+    trend = card_trend(history, now)
+    if trend is not None and trend <= -f.get("max_drop", 1):
+        return None
+    safe = (sales_24h >= f.get("safe_sales_24h", 8) and trend is not None and trend > -0.05
+            and roi >= f.get("safe_roi", 0.15) and not falling)
+    if f.get("only_safe") and not safe:
+        return None
     return Listing(int(price), ends, int(market), _max_buy(sell_net, f), int(profit), roi,
-                   discount, falling, basis)
+                   discount, falling, basis, "safe" if safe else "good", sales_24h, trend)
 
 
 def daily_medians(history):

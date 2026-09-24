@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS flips (
     ts REAL, uid TEXT, name TEXT, url TEXT, buy INTEGER, max_buy INTEGER,
-    market INTEGER, profit INTEGER, roi REAL, falling INTEGER, ends REAL
+    market INTEGER, profit INTEGER, roi REAL, falling INTEGER, ends REAL,
+    grade TEXT, sales_24h INTEGER, trend REAL
 );
 """
 
@@ -42,8 +43,10 @@ class DB:
         cols = {r["name"] for r in self.c.execute("PRAGMA table_info(items)")}
         if "score" not in cols:
             self.c.execute("ALTER TABLE items ADD COLUMN score REAL DEFAULT 0")
-        if "ends" not in {r["name"] for r in self.c.execute("PRAGMA table_info(flips)")}:
-            self.c.execute("ALTER TABLE flips ADD COLUMN ends REAL")
+        fcols = {r["name"] for r in self.c.execute("PRAGMA table_info(flips)")}
+        for col, typ in (("ends", "REAL"), ("grade", "TEXT"), ("sales_24h", "INTEGER"), ("trend", "REAL")):
+            if col not in fcols:
+                self.c.execute(f"ALTER TABLE flips ADD COLUMN {col} {typ}")
         self.c.commit()
 
     # items
@@ -147,10 +150,11 @@ class DB:
 
     def log_flip(self, uid, name, url, f):
         self.c.execute(
-            "INSERT INTO flips (ts, uid, name, url, buy, max_buy, market, profit, roi, falling, ends)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO flips (ts, uid, name, url, buy, max_buy, market, profit, roi, falling, ends,"
+            " grade, sales_24h, trend) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (time.time(), uid, name, url, getattr(f, "buy_seen", None) or f.bin_price,
-             f.max_buy, f.market, f.profit, f.roi, int(f.falling), getattr(f, "ends", None)))
+             f.max_buy, f.market, f.profit, f.roi, int(f.falling), getattr(f, "ends", None),
+             getattr(f, "grade", None), getattr(f, "sales_24h", None), getattr(f, "trend", None)))
         self.c.execute("DELETE FROM flips WHERE ts < ?", (time.time() - 7 * 86400,))
         self.c.commit()
 

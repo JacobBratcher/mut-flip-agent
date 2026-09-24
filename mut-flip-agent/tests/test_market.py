@@ -12,10 +12,10 @@ H, D = 3600, 86400
 def card(uid, prev_price, cur_price, week_price=None):
     """Two sales in each 24h window: yesterday, today (and optionally a week ago)."""
     sales = [(prev_price, NOW - 30 * H), (prev_price, NOW - 40 * H),
-             (cur_price, NOW - 2 * H), (cur_price, NOW - 10 * H)]
+             (cur_price, NOW - 1 * H), (cur_price, NOW - 4 * H)]
     if week_price:
         sales += [(week_price, NOW - 7 * D - 2 * H), (week_price, NOW - 7 * D - 10 * H)]
-    return (uid, f"Card {uid}", f"https://www.mut.gg/players/x/{uid}/", sales)
+    return (uid, "Player Legends 86 OVR", f"https://www.mut.gg/players/1-player/{uid}/", sales)
 
 
 def test_market_crash_detected():
@@ -32,6 +32,7 @@ def test_one_card_cannot_move_the_market():
     m = market.market_move(cards, NOW)
     assert m.change_24h == 0 and market.classify(m.change_24h, 0.08) is None
     assert m.fallers[0].uid == "27-99" and round(m.fallers[0].change, 2) == -0.8
+    assert round(m.breadth_down, 2) == round(1 / 12, 2)
 
 
 def test_not_enough_cards_is_not_a_signal():
@@ -91,14 +92,14 @@ class Disc(FakeDiscord):
     def market_alert(self, kind, move, platform):
         self.alerts.append(kind)
 
-    def market_report(self, move, news, drops, snipes, platform):
+    def market_report(self, move, news, drops, snipes, platform, **kw):
         self.reports.append((move, news, drops))
 
 
 def agent(tmp_path, monkeypatch, **market_cfg):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     cfg = DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False,
-                      "market": DEFAULTS["market"] | market_cfg}
+                      "market": DEFAULTS["market"] | market_cfg, "youtube_channels": []}
     a = main.Agent(cfg)
     a.discord = Disc()
     return a
@@ -148,3 +149,71 @@ def test_crash_alert_once_and_daily_report(tmp_path, monkeypatch):
     a.next["market"] = 0
     a.maybe_market()                                        # same day: no repeat alert or report
     assert a.discord.alerts == ["crash"] and len(a.discord.reports) == 1
+
+
+def test_midday_crash_shows_in_full():
+    """Crash at 10:50 AM, measured at midnight: the old whole-day average showed about half of it."""
+    cards = []
+    for i in range(12):
+        sales = [(100_000, NOW - h * H) for h in range(26, 48, 2)]          # yesterday: 100k
+        sales += [(100_000, NOW - h * H) for h in range(14, 24, 2)]         # this morning: 100k
+        sales += [(75_000, NOW - h * H) for h in range(1, 13, 2)]           # after the drop: 75k
+        cards.append((f"27-{i}", f"P{i} Team of the Week 86 OVR", f"https://www.mut.gg/players/{i}-p{i}/27-{i}/", sales))
+    m = market.market_move(cards, NOW)
+    assert round(m.change_24h, 2) == -0.25 and m.breadth_down == 1.0
+    assert m.programs[0].program == "Team of the Week" and round(m.programs[0].change, 2) == -0.25
+
+
+def test_program_split_shows_opposite_moves():
+    legends = [card(f"27-L{i}", 100_000, 70_000) for i in range(6)]
+    builders = [(f"27-B{i}", f"B{i} Team Builders 85 OVR", f"https://www.mut.gg/players/{i}-b{i}/27-B{i}/",
+                 card("x", 100_000, 160_000)[3]) for i in range(6)]
+    m = market.market_move(legends + builders, NOW)
+    progs = {p.program: round(p.change, 2) for p in m.programs}
+    assert progs == {"Legends": -0.3, "Team Builders": 0.6}
+
+
+def test_timing_tips():
+    from datetime import datetime
+    wed = datetime(2026, 9, 23, 12)
+    tips = market.timing_tips(wed, promo_today=True)
+    assert any("Promo day" in t for t in tips) and any("Midweek" in t for t in tips)
+    fri = datetime(2026, 10, 9, 12)
+    tips = market.timing_tips(fri, promo_today=False)
+    assert any("Fri/Sat" in t for t in tips) and any("Road to the Playoffs" in t for t in tips)
+
+
+def test_program_alert_fires_once(tmp_path, monkeypatch):
+    a = agent(tmp_path, monkeypatch, news=False, twitch_drops=False, report=False)
+    a.discord.program_alerts = []
+    a.discord.program_alert = lambda kind, p, move, platform: a.discord.program_alerts.append((kind, p.program))
+    for uid, name, url, sales in [card(f"27-{i}", 100_000, 70_000) for i in range(12)]:
+        a.db.upsert_item(uid, url); a.db.set_name(uid, name)
+        a.db.add_sales(uid, [(p, datetime.fromtimestamp(t, timezone.utc).isoformat()) for p, t in sales])
+    a._check_market(); a._check_market()
+    assert a.discord.program_alerts == [("crash", "Legends")] and a.discord.alerts == ["crash"]
+
+
+def test_youtube_first_look_silent_then_new_uploads(tmp_path, monkeypatch):
+    from app import youtube
+    a = agent(tmp_path, monkeypatch)
+    a.cfg["youtube_channels"] = ["UCd0jBryyetpHJ5DhPlKQ_sA"]
+    posted = []
+    a.discord.video = lambda v, market_related: posted.append((v.title, market_related))
+    old = [youtube.Video("aaaaaaaaaaa", "Ranking The BEST QBs in MUT 27!", "GutFoxx")]
+    monkeypatch.setattr(youtube, "latest", lambda s, cid: old)
+    a._check_youtube()
+    assert posted == []
+    new = [youtube.Video("bbbbbbbbbbb", "MARKET CRASH! Sell these now", "GutFoxx")] + old
+    monkeypatch.setattr(youtube, "latest", lambda s, cid: new)
+    a._check_youtube(); a._check_youtube()
+    assert posted == [("MARKET CRASH! Sell these now", True)] and a.videos[0].id == "bbbbbbbbbbb"
+
+
+def test_videos_tab_parser_on_real_page():
+    import os
+    from app import youtube
+    if not os.path.exists("/tmp/gfv.html"):
+        return
+    vids = youtube.parse_videos_tab(open("/tmp/gfv.html", encoding="utf-8", errors="ignore").read())
+    assert len(vids) >= 10 and vids[0].channel == "GutFoxx" and len(vids[0].id) == 11

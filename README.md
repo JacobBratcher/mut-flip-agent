@@ -3,9 +3,12 @@
 Watches Madden Ultimate Team prices on [mut.gg](https://www.mut.gg) (PC market) and posts a **🎯 Snipe** to Discord the moment a card is listed for Buy Now far enough under its resale value to flip for a profit after tax.
 
 It also keeps you on top of the market as a whole:
-- **📉 / 📈 Crash and bump alerts** (instant, `@here`) when the median card price moves `market.alert_pct` (default 8%) in 24h, measured across every card it tracks so one card can't trigger it. Crashes are buy windows; bumps are sell windows.
+- **📉 / 📈 Crash and bump alerts** (instant, `@here`) when the median card price moves `market.alert_pct` (default 8%), comparing each card's latest sales (last 6h) with the same card yesterday, so a crash that starts mid-day shows in full. One card can't trigger it.
+- **Program alerts** when one program (Legends, Team of the Week, Team Builders…) moves `market.program_alert_pct` (15%), even if the overall market doesn't.
 - **📊 Daily report** at `market.report_hour` (default 9 AM): market change over 24h and 7d, biggest drops and gains, new mut.gg promos, live Twitch drops, and yesterday's snipes.
 - **🆕 New promos** posted as mut.gg publishes them (checked every 30 min).
+- **📺 MUT YouTubers:** new uploads from `youtube_channels` (default [GutFoxx](https://www.youtube.com/@GutFoxx); add any `@handle`), with market/coin videos marked 💰.
+- **What to do today** in the daily report: promo-day dip and next-day bounce, midweek buying / weekend selling, and the big seasonal crashes (Road to the Playoffs, Team of the Year + Super Bowl, NFL Draft), based on [GutFoxx's market guides](https://gutfoxx.com/tag/madden-market/) and the mut.gg community.
 - **🎁 Twitch drop reminders** (`@here`) when a Madden drop campaign goes live, from [twitchdrops.app](https://twitchdrops.app/game/madden-nfl-27) (checked every 3 h).
 
 Optional, off by default: alerts on cheap *completed* sales (`flip.sale_alerts`; someone already bought those, so there's nothing to snipe) and a daily long-term investment digest (`invest.enabled`).
@@ -22,6 +25,9 @@ Runs 24/7 as a Home Assistant add-on or a plain Docker container. Data access is
 3. An alert fires only if, after the 10% auction tax, it clears **both** `min_profit` coins and `min_roi`, and it's at least `min_discount` under resale value.
 4. Each alert shows the **max price to buy at**, **what to list it for**, and whether that resale price came from listings or sales.
 5. A listing that's alerted and then sells doesn't alert again as a cheap sale.
+6. **Only cards you can resell fast:** at least `min_sales_24h` (3) sales in the last 24h.
+7. **No falling knives:** skipped if the card's latest sales are down `max_drop` (15%) or more from the same time yesterday.
+8. **Graded:** 🟢 **SAFE** = sells 8+/day, flat or rising, 15%+ ROI. 🟡 **GOOD** = passes the rules above. Set `only_safe: true` to get only green ones.
 
 **Investments** (off by default; sent once a day at `digest_hour` when `invest.enabled` is on)
 - At least `min_days_history` days of data and `min_daily_sales` sales/day (so you can actually sell later).

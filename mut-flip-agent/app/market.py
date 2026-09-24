@@ -28,48 +28,99 @@ class Mover:
 
 
 @dataclass
+class ProgramMove:
+    program: str
+    change: float
+    cards: int
+
+
+@dataclass
 class MarketMove:
     change_24h: float | None
     change_7d: float | None
     cards_24h: int
     fallers: list = field(default_factory=list)
     risers: list = field(default_factory=list)
+    breadth_down: float | None = None     # share of cards down 10%+ since yesterday
+    programs: list = field(default_factory=list)
 
 
-def _window(sales, start, end):
-    return [p for p, t in sales if start <= t < end]
+RECENT = 6 * HOUR       # "now" = a card's latest sales, if it sold in the last 6h
+LATEST = 3              # ...using up to its 3 most recent sales
 
 
-def _change(sales, now, back):
-    """Card price now vs. `back` seconds ago, from sales in two matching 24h windows."""
-    cur = _window(sales, now - DAY, now + 1)
-    prev = _window(sales, now - back - DAY, now - back)
-    if len(cur) < MIN_SALES or len(prev) < MIN_SALES:
-        return None, None
-    c, p = median(cur), median(prev)
-    return (c / p - 1 if p else None), c
+def _latest(sales, now):
+    """Median of a card's most recent sales, only if they're fresh."""
+    fresh = sorted((t, p) for p, t in sales if now - RECENT <= t <= now + 1)[-LATEST:]
+    return median(p for _, p in fresh) if len(fresh) >= MIN_SALES else None
+
+
+def _baseline(sales, now, back):
+    """Median price over the 24h window that ended `back` seconds ago."""
+    old = [p for p, t in sales if now - back - DAY <= t < now - back]
+    return median(old) if len(old) >= MIN_SALES else None
+
+
+def program_of(name, url):
+    """'T.J. Watt Team of the Week 87 OVR' + '/players/12562-tj-watt/...' -> 'Team of the Week'."""
+    m = re.search(r"/players/\d+-([a-z0-9-]+)/", url or "")
+    if not name or not m:
+        return None
+    words = name.split()
+    if len(words) > 2 and re.fullmatch(r"\d{2}", words[-2]) and words[-1].upper() == "OVR":
+        words = words[:-2]
+    player = m.group(1).split("-")
+    norm = lambda w: re.sub(r"[^a-z0-9]", "", w.lower())
+    i = 0
+    for part in player:
+        if i < len(words) and norm(words[i]) == part:
+            i += 1
+    while i < len(words) and norm(words[i]) in {"jr", "sr", "ii", "iii", "iv", "v"}:
+        i += 1
+    if i == 0 or i >= len(words):
+        return None
+    return " ".join(words[i:])
 
 
 def market_move(cards, now, top=5) -> MarketMove:
-    """cards: [(uid, name, url, [(price, ts), ...])]. Index = median change across cards,
-    so one card's spike or crash can't move it."""
-    day, week, movers = [], [], []
+    """cards: [(uid, name, url, [(price, ts), ...])].
+
+    Each card's latest sales (last 6h) vs. the same card yesterday, so a crash that
+    started mid-day shows up in full instead of being averaged with the morning.
+    The market figure is the median card, so one card can't move it.
+    """
+    day, week, movers, by_program = [], [], [], {}
     for uid, name, url, sales in cards:
-        ch, cur = _change(sales, now, DAY)
-        if ch is not None:
+        cur = _latest(sales, now)
+        if cur is None:
+            continue
+        prev = _baseline(sales, now, DAY)
+        if prev:
+            ch = cur / prev - 1
             day.append(ch)
             movers.append(Mover(uid, name or uid, url, int(cur), ch))
-        ch7, _ = _change(sales, now, 7 * DAY)
-        if ch7 is not None:
-            week.append(ch7)
+            prog = program_of(name, url)
+            if prog:
+                by_program.setdefault(prog, []).append(ch)
+        wk = _baseline(sales, now, 7 * DAY)
+        if wk:
+            week.append(cur / wk - 1)
     movers.sort(key=lambda m: m.change)
+    programs = sorted((ProgramMove(p, median(c), len(c)) for p, c in by_program.items()
+                       if len(c) >= MIN_PROGRAM_CARDS), key=lambda p: p.change)
+    enough = len(day) >= MIN_CARDS
     return MarketMove(
-        change_24h=median(day) if len(day) >= MIN_CARDS else None,
+        change_24h=median(day) if enough else None,
         change_7d=median(week) if len(week) >= MIN_CARDS else None,
         cards_24h=len(day),
         fallers=[m for m in movers[:top] if m.change < 0],
         risers=[m for m in reversed(movers[-top:]) if m.change > 0],
+        breadth_down=(sum(1 for c in day if c <= -0.10) / len(day)) if enough else None,
+        programs=programs,
     )
+
+
+MIN_PROGRAM_CARDS = 4
 
 
 def classify(change, threshold):
@@ -81,6 +132,49 @@ def classify(change, threshold):
     if change >= threshold:
         return "bump"
     return None
+
+
+# ------------------------------------------------------------------ playbook
+# Timing rules from GutFoxx (gutfoxx.com/tag/madden-market) and the mut.gg community.
+SEASON_CRASHES = [
+    # (start month, start day, end month, end day, what)
+    (10, 20, 11, 10, "Road to the Playoffs: historically a 50%+ crash on most cards"),
+    (1, 1, 2, 15, "Team of the Year + Super Bowl: the biggest crash of the year"),
+    (4, 15, 5, 5, "NFL Draft program: most non-top cards sink as players chase coins"),
+]
+
+
+def season_warning(today, lead_days=14):
+    """A heads-up when a historically big crash window is near or underway."""
+    from datetime import date
+    for sm, sd, em, ed, what in SEASON_CRASHES:
+        for y in (today.year - 1, today.year, today.year + 1):
+            start = date(y, sm, sd)
+            end = date(y if (em, ed) >= (sm, sd) else y + 1, em, ed)
+            if start <= today <= end:
+                return f"Now: {what}. Don't hold cards; flip fast."
+            days = (start - today).days
+            if 0 < days <= lead_days:
+                return f"In {days} days: {what}. Sell anything you're holding before it starts."
+    return None
+
+
+def timing_tips(now_dt, promo_today):
+    """Plain-language timing tips for today."""
+    tips = []
+    if promo_today:
+        tips.append("Promo day: older cards dip while packs get ripped. Buy the dip; prices "
+                    "usually bounce the next day, so sell into that bounce (GutFoxx).")
+    wd = now_dt.weekday()           # Mon=0
+    if wd in (1, 2, 3):
+        tips.append("Midweek (Tue-Thu) is usually the cheapest time to buy.")
+    elif wd in (4, 5):
+        tips.append("Fri/Sat prices usually run higher as people upgrade for the weekend: "
+                    "good time to sell.")
+    warn = season_warning(now_dt.date())
+    if warn:
+        tips.append(warn)
+    return tips
 
 
 # ------------------------------------------------------------------ news

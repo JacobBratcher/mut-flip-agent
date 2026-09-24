@@ -7,7 +7,7 @@ from datetime import datetime
 
 import requests
 
-from . import analysis, config, market
+from . import analysis, config, market, youtube
 from .client import Blocked, MutGG, normalize_watch, parse_live, parse_sales
 from .db import DB, ts
 from .ha import HA
@@ -43,7 +43,8 @@ class Agent:
         self.move = None
         self.drops = None
         self.news = []
-        self.next = {"news": 0, "drops": 0, "market": 0}
+        self.videos = []
+        self.next = {"news": 0, "drops": 0, "market": 0, "youtube": 0}
 
     # ---------------------------------------------------------------- setup
     def sync_items(self):
@@ -136,7 +137,8 @@ class Agent:
         if deal:
             key = f"live:{deal.bin_price}:{int(deal.ends)}"
             if not self.db.last_alert(uid, key):
-                self.discord.listing(row["name"] or uid, row["url"], deal, self.cfg["platform"])
+                self.discord.listing(row["name"] or uid, row["url"], deal, self.cfg["platform"],
+                                     promo_today=self.promo_today())
                 self.db.log_alert(uid, key)
                 self.db.log_alert(uid, f"price:{deal.bin_price}")
                 self.db.log_flip(uid, row["name"] or uid, row["url"], deal)
@@ -203,6 +205,9 @@ class Agent:
         if m["twitch_drops"] and now >= self.next["drops"]:
             self.next["drops"] = now + 3 * 3600
             self._check_drops()
+        if self.cfg.get("youtube_channels") and now >= self.next["youtube"]:
+            self.next["youtube"] = now + 3600
+            self._check_youtube()
         if now >= self.next["market"]:
             self.next["market"] = now + 3600
             self._check_market()
@@ -213,7 +218,9 @@ class Agent:
             day_ago = now - DAY
             news = [a for a in self.news if a.published.timestamp() >= day_ago]
             snipes = self.db.recent_flips(hours=24, limit=1000)
-            self.discord.market_report(self.move, news, self.drops, snipes, self.cfg["platform"])
+            self.discord.market_report(self.move, news, self.drops, snipes, self.cfg["platform"],
+                                       tips=self.tips(), videos=self.videos[:4],
+                                       threshold=m["alert_pct"] / 100)
             keep = 10
             if self.cfg["invest"]["enabled"]:
                 keep = max(keep, self.cfg["invest"]["window_days"] + 2)
@@ -251,6 +258,44 @@ class Agent:
         self.db.put("drops_last", drops or "")
         self.last_publish = 0
 
+    def promo_today(self):
+        today = datetime.now().astimezone().date()
+        return any(market.is_promo(a.title) and a.published.astimezone().date() == today
+                   for a in self.news)
+
+    def tips(self):
+        return market.timing_tips(datetime.now().astimezone(), self.promo_today())
+
+    def _check_youtube(self):
+        seen_raw = self.db.get("yt_seen")
+        seen = set(json.loads(seen_raw)) if seen_raw else set()
+        known = set(json.loads(self.db.get("yt_channels_seen") or "[]"))
+        found = []
+        for ident in self.cfg["youtube_channels"]:
+            try:
+                cid = self.db.get(f"yt_id:{ident}") or youtube.resolve(self.web, ident)
+                if not cid:
+                    log.warning("YouTube channel %s not found", ident)
+                    continue
+                self.db.put(f"yt_id:{ident}", cid)
+                vids = youtube.latest(self.web, cid)[:10]
+            except requests.RequestException as e:
+                log.warning("YouTube check for %s failed: %s", ident, e)
+                continue
+            if cid in known:                         # first look at a channel is silent
+                for v in reversed(vids):
+                    if v.id not in seen:
+                        self.discord.video(v, youtube.is_market_video(v.title))
+                        log.info("VIDEO %s: %s", v.channel, v.title)
+            known.add(cid)
+            seen.update(v.id for v in vids)
+            found.extend(vids[:3])
+        if found:
+            self.videos = found
+        self.db.put("yt_seen", json.dumps(sorted(seen)[-500:]))
+        self.db.put("yt_channels_seen", json.dumps(sorted(known)))
+        self.last_publish = 0
+
     def _check_market(self):
         now = time.time()
         cards = [(r["uid"], r["name"], r["url"], self.db.sales_since(r["uid"], now - 9 * DAY))
@@ -261,6 +306,14 @@ class Agent:
             self.discord.market_alert(kind, self.move, self.cfg["platform"])
             self.db.log_alert("market", kind)
             log.info("MARKET %s %.1f%%", kind, self.move.change_24h * 100)
+        limit = self.cfg["market"]["program_alert_pct"] / 100
+        for p in self.move.programs:
+            pk = market.classify(p.change, limit)
+            key = f"program:{p.program}:{pk}"
+            if pk and now - self.db.last_alert("market", key) > 12 * 3600:
+                self.discord.program_alert(pk, p, self.move, self.cfg["platform"])
+                self.db.log_alert("market", key)
+                log.info("PROGRAM %s %s %.1f%%", p.program, pk, p.change * 100)
         self.last_publish = 0
 
     def publish(self):
@@ -272,7 +325,9 @@ class Agent:
                   "falling": bool(r["falling"]),
                   "when": datetime.fromtimestamp(r["ts"]).astimezone().isoformat(),
                   "ends": (datetime.fromtimestamp(r["ends"]).astimezone().isoformat()
-                           if r["ends"] else None)}
+                           if r["ends"] else None),
+                  "grade": r["grade"] or "good", "sales_24h": r["sales_24h"],
+                  "trend": _pct(r["trend"])}
                  for r in self.db.recent_flips()]
         picks = [{"name": n, "url": u, "buy": p.current, "target": p.target, "high": p.high,
                   "profit": p.profit, "roi": round(p.roi, 3), "drawdown": round(p.drawdown, 3),
@@ -298,13 +353,22 @@ class Agent:
             "market_7d": _pct(self.move.change_7d if self.move else None),
             "twitch_drop": "live" if self.drops else "none",
             "promos_24h": len([a for a in self.news if time.time() - a.published.timestamp() < DAY]),
+            "latest_video": (self.videos[0].title[:250] if self.videos else None),
         }
         extra = {
             "market": {
                 "fallers": [_mover(x) for x in (self.move.fallers if self.move else [])],
                 "risers": [_mover(x) for x in (self.move.risers if self.move else [])],
                 "cards": self.move.cards_24h if self.move else 0,
+                "breadth_down": _pct(self.move.breadth_down if self.move else None),
+                "programs": [{"program": p.program, "change": round(p.change * 100, 1),
+                              "cards": p.cards} for p in (self.move.programs if self.move else [])],
+                "tips": self.tips(),
             },
+            "youtube": {"videos": [{"title": v.title, "url": v.url, "channel": v.channel,
+                                    "market": youtube.is_market_video(v.title),
+                                    "when": v.published.isoformat() if v.published else None,
+                                    "age": v.age} for v in self.videos]},
             "drops": {"text": self.drops or "", "page": market.DROPS_PAGE},
             "news": {"articles": [{"title": a.title, "url": a.url, "promo": market.is_promo(a.title),
                                    "when": a.published.isoformat()} for a in self.news[:10]]},

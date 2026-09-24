@@ -112,12 +112,44 @@ def test_lone_optimistic_listing_is_capped_by_sales():
     assert v == 500_000 * 1.10 and basis == "sales"
 
 
-def test_low_volume_card_with_three_sales_qualifies():
-    # Three sales spread over five days: enough on PC now (was 8 in 48h).
+def test_slow_seller_is_skipped_by_default():
+    # Three sales over five days: priced, but too slow to resell, so no snipe...
     history = hist([(200_000, 20), (205_000, 60), (198_000, 110)])
     listings = [(150_000, NOW + 600), (210_000, NOW + 900)]
+    assert analysis.live_deal(listings, history, DEFAULTS, TAX, NOW) is None
+    # ...unless you turn the liquidity rule off.
+    cfg = DEFAULTS | {"flip": DEFAULTS["flip"] | {"min_sales_24h": 0}}
+    d = analysis.live_deal(listings, history, cfg, TAX, NOW)
+    assert d is not None and d.bin_price == 150_000 and d.grade == "good"
+
+
+def liquid(price_yesterday, price_today, n=10):
+    """n sales yesterday (24-48h ago) and n today."""
+    return (hist([(price_yesterday, 26 + i * 2) for i in range(n)])
+            + hist([(price_today, 1 + i * 2) for i in range(n)]))
+
+
+def test_falling_knife_is_skipped():
+    # Down 30% since yesterday: even a "cheap" listing is still sliding.
+    history = liquid(200_000, 140_000)
+    listings = [(100_000, NOW + 600), (140_000, NOW + 900)]
+    assert analysis.live_deal(listings, history, DEFAULTS, TAX, NOW) is None
+
+
+def test_safe_grade_liquid_flat_fat_margin():
+    history = liquid(200_000, 200_000)
+    listings = [(140_000, NOW + 600), (200_000, NOW + 900)]
     d = analysis.live_deal(listings, history, DEFAULTS, TAX, NOW)
-    assert d is not None and d.bin_price == 150_000
+    assert d.grade == "safe" and d.sales_24h == 10 and abs(d.trend) < 0.01
+
+
+def test_good_grade_when_margin_is_thin():
+    history = liquid(200_000, 200_000)
+    listings = [(160_000, NOW + 600), (200_000, NOW + 900)]   # ~11% ROI: passes, not safe
+    d = analysis.live_deal(listings, history, DEFAULTS, TAX, NOW)
+    assert d is not None and d.grade == "good"
+    only_safe = DEFAULTS | {"flip": DEFAULTS["flip"] | {"only_safe": True}}
+    assert analysis.live_deal(listings, history, only_safe, TAX, NOW) is None
 
 
 def test_own_listing_is_not_its_own_competitor():
