@@ -109,9 +109,13 @@ class Agent:
             self.db.set_last_seen(uid, max(d for _, d in sales))
 
         history = self.db.sales_since(uid, now - self.cfg["flip"]["lookback_hours"] * 3600)
-        signal = analysis.flip_signal(new, history, self.cfg, self.tax, now)
+        listings = parse_live(data)
+        signal = analysis.flip_signal(new, history, self.cfg, self.tax, now, listings)
         cooldown = self.cfg["flip"]["alert_cooldown_hours"] * 3600
-        if signal and now - self.db.last_alert(uid, "flip") > cooldown:
+        # A listing we already alerted on that then sells shows up as a "cheap sale";
+        # don't alert the same card at the same price twice.
+        already = signal and now - self.db.last_alert(uid, f"price:{signal.buy_seen}") < cooldown
+        if signal and not already and now - self.db.last_alert(uid, "flip") > cooldown:
             row = self.ensure_name(row)
             self.discord.flip(row["name"] or uid, row["url"], signal, self.cfg["platform"])
             self.db.log_alert(uid, "flip")
@@ -119,12 +123,13 @@ class Agent:
             self.last_publish = 0
             log.info("FLIP %s buy<=%s profit=%s", uid, signal.max_buy, signal.profit)
 
-        deal = analysis.live_deal(parse_live(data), history, self.cfg, self.tax, now)
+        deal = analysis.live_deal(listings, history, self.cfg, self.tax, now)
         if deal:
             key = f"live:{deal.bin_price}:{int(deal.ends)}"
             if not self.db.last_alert(uid, key):
                 self.discord.listing(row["name"] or uid, row["url"], deal, self.cfg["platform"])
                 self.db.log_alert(uid, key)
+                self.db.log_alert(uid, f"price:{deal.bin_price}")
                 self.db.log_flip(uid, row["name"] or uid, row["url"], deal)
                 self.last_publish = 0
                 log.info("LISTING %s bin=%s profit=%s", uid, deal.bin_price, deal.profit)

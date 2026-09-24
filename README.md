@@ -10,12 +10,13 @@ Runs 24/7 as a Home Assistant add-on or a plain Docker container. Data access is
 ## How it decides
 
 **Flips**
-1. Market value = median sale price over the last 48h. If the last 12h are clearly lower, it uses that instead so a falling card doesn't look like a bargain.
-2. A new sale triggers an alert only if, after the 10% auction tax, it clears **both** `min_profit` coins and `min_roi`, and it's at least `min_discount` under market.
-3. The alert tells you the **max price to buy at** and **what to list it for**.
-4. One alert per card per `alert_cooldown_hours`.
-
-Note: mut.gg publishes *completed* sales, not live listings. An alert means "this card is trading under value right now," so move fast.
+1. Resale value is what you could realistically sell for *right now*, not a slow average (PC has little volume):
+   - the **cheapest competing Buy Now listing**, which you'd have to undercut to sell, so the estimate follows listings down immediately;
+   - capped at **+10% over the last 3 sales**, so one optimistic seller can't inflate a flip.
+2. A card needs only **3 sales in the last 7 days** to be priced.
+3. An alert fires only if, after the 10% auction tax, it clears **both** `min_profit` coins and `min_roi`, and it's at least `min_discount` under resale value.
+4. Each alert shows the **max price to buy at**, **what to list it for**, and whether that resale price came from listings or sales.
+5. A listing that's alerted and then sells doesn't alert again as a cheap sale.
 
 **Investments** (sent once a day at `digest_hour`)
 - At least `min_days_history` days of data and `min_daily_sales` sales/day (so you can actually sell later).

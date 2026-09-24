@@ -34,13 +34,14 @@ def test_no_flip_without_enough_history():
     assert analysis.flip_signal(new, history + new, DEFAULTS, TAX, NOW) is None
 
 
-def test_falling_market_uses_recent_price():
+def test_resale_tracks_last_sales_not_the_average():
+    # Sold at 600k for two days, then the last few sales dropped to 450k.
     old = [(600_000, h) for h in range(20, 46, 2)]
-    recent = [(450_000, h) for h in (1, 3, 5, 7)]
+    recent = [(450_000, h) for h in (1, 3, 5)]
     history = hist(old + recent)
     new = [(330_000, NOW - 60)]
     f = analysis.flip_signal(new, history + new, DEFAULTS, TAX, NOW)
-    assert f is not None and f.falling and f.market == 450_000
+    assert f is not None and f.market == 450_000 and f.basis == "sales"
 
 
 def test_invest_finds_leveled_off_dip():
@@ -86,9 +87,40 @@ def test_live_deal_finds_cheap_listing():
     history = hist([(500_000, h) for h in range(1, 30, 3)])
     listings = [(480_000, NOW + 600), (370_000, NOW + 300), (300_000, NOW - 10)]  # last one expired
     d = analysis.live_deal(listings, history, DEFAULTS, TAX, NOW)
-    assert d is not None and d.bin_price == 370_000 and d.profit == int(500_000 * 0.9 - 370_000)
+    # You buy the 370k listing; to resell you must undercut the next one at 480k.
+    assert d is not None and d.bin_price == 370_000
+    assert d.market == int(480_000 * 0.99) and d.basis == "listings"
+    assert d.profit == int(480_000 * 0.99 * 0.9 - 370_000)
 
 
 def test_live_deal_none_when_listings_at_market():
     history = hist([(500_000, h) for h in range(1, 30, 3)])
     assert analysis.live_deal([(495_000, NOW + 600)], history, DEFAULTS, TAX, NOW) is None
+
+
+def test_listings_pull_resale_down_immediately():
+    # Sales say 500k, but sellers have already dropped to 420k: resale follows them.
+    history = hist([(500_000, h) for h in (2, 5, 9)])
+    v, basis, falling = analysis.resale_value(history, [(420_000, NOW + 900)], NOW)
+    assert v == 420_000 * 0.99 and basis == "listings" and falling
+
+
+def test_lone_optimistic_listing_is_capped_by_sales():
+    # Only competitor asks 800k while buyers paid 500k: trust at most +10% over sales.
+    history = hist([(500_000, h) for h in (2, 5, 9)])
+    v, basis, _ = analysis.resale_value(history, [(800_000, NOW + 900)], NOW)
+    assert v == 500_000 * 1.10 and basis == "sales"
+
+
+def test_low_volume_card_with_three_sales_qualifies():
+    # Three sales spread over five days: enough on PC now (was 8 in 48h).
+    history = hist([(200_000, 20), (205_000, 60), (198_000, 110)])
+    listings = [(150_000, NOW + 600), (210_000, NOW + 900)]
+    d = analysis.live_deal(listings, history, DEFAULTS, TAX, NOW)
+    assert d is not None and d.bin_price == 150_000
+
+
+def test_own_listing_is_not_its_own_competitor():
+    history = hist([(500_000, h) for h in (2, 5, 9)])
+    v, basis, _ = analysis.resale_value(history, [(370_000, NOW + 600)], NOW, exclude_price=370_000)
+    assert v == 500_000 and basis == "sales"

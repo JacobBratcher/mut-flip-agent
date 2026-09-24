@@ -87,8 +87,10 @@ $manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
 $manifest.host_permissions = @($manifest.host_permissions) + $origin
 [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 10), $utf8)
 
-# 6. Launcher: dedicated profile, keeps running when the RDP window is disconnected.
+# 6. Launcher: dedicated profile, starts minimized, keeps running when RDP disconnects.
+# (Not headless: headless Chrome identifies itself as HeadlessChrome and mut.gg blocks it.)
 $flags = @(
+    '--start-minimized',
     "--user-data-dir=`"$profileDir`"",
     "--load-extension=`"$ext`"",
     '--no-first-run', '--no-default-browser-check',
@@ -104,13 +106,14 @@ foreach ($dir in @([Environment]::GetFolderPath('Startup'), [Environment]::GetFo
     $lnk.Arguments = $flags
     $lnk.WorkingDirectory = Split-Path $chrome
     $lnk.Description = 'MUT Flip Feeder (mut.gg prices -> Home Assistant)'
+    $lnk.WindowStyle = 7   # minimized
     $lnk.Save()
 }
 
 # 7. Don't let the PC sleep while plugged in (the feeder stops if it sleeps).
 try { powercfg /change standby-timeout-ac 0 | Out-Null; powercfg /change hibernate-timeout-ac 0 | Out-Null } catch { }
 
-Start-Process -FilePath $chrome -ArgumentList $flags
+Start-Process -FilePath $chrome -ArgumentList $flags -WindowStyle Minimized
 Write-Host ''
-Write-Host 'Done. The MUT Flip Feeder window is open and starts itself at every sign-in.' -ForegroundColor Green
+Write-Host 'Done. The MUT Flip Feeder is running minimized in the taskbar and starts itself at every sign-in.' -ForegroundColor Green
 Write-Host 'Leave it running. When you leave RDP, close the RDP window (disconnect), do NOT sign out.'

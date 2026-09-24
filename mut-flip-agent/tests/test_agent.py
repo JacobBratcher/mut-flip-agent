@@ -73,3 +73,29 @@ def test_hot_tier_is_capped(tmp_path, monkeypatch):
         agent.check(agent.db.item(f"27-{i}"))
     assert agent.db.count_tier("hot") == 2
     assert agent.db.count_tier("cold") == 3
+
+
+def test_listing_then_sale_alerts_once(tmp_path, monkeypatch):
+    """A listing we alert on that later sells must not alert again as a cheap sale."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    cfg = DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False}
+    agent = main.Agent(cfg)
+
+    class Disc(FakeDiscord):
+        def __init__(self):
+            super().__init__(); self.listings = []
+        def listing(self, name, url, d, platform):
+            self.listings.append(d)
+
+    agent.discord = Disc()
+    agent.db.upsert_item("27-1", "")
+    sales = [{"soldPrice": 500_000, "soldDate": iso(h)} for h in range(2, 40, 3)]
+    end = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+    agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": sales}})
+    agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": sales,
+        "liveAuctions": [{"buyNowPrice": 360_000, "endDate": end}]}})
+    assert len(agent.discord.listings) == 1
+    # The listing sells: it now appears as a completed sale at 360k.
+    sold = [{"soldPrice": 360_000, "soldDate": iso(0.01)}] + sales
+    agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": sold}})
+    assert agent.discord.flips == [] and len(agent.discord.listings) == 1

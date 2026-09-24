@@ -47,7 +47,7 @@ class Discord:
                 {"name": "Resell around", "value": coins(f.market), "inline": True},
                 {"name": "Profit after tax", "value": f"{coins(f.profit)} ({f.roi:.0%})", "inline": True},
             ],
-            "footer": {"text": f"{platform.upper()} • mut.gg sold data"},
+            "footer": {"text": f"{platform.upper()} • resale based on {f.basis}"},
         }
         if url:
             embed["url"] = url
@@ -65,7 +65,7 @@ class Discord:
                 {"name": "Resell around", "value": coins(d.market), "inline": True},
                 {"name": "Profit after tax", "value": f"{coins(d.profit)} ({d.roi:.0%})", "inline": True},
             ],
-            "footer": {"text": f"{platform.upper()} • live listing"},
+            "footer": {"text": f"{platform.upper()} • live listing • resale based on {d.basis}"},
         }
         if url:
             embed["url"] = url
