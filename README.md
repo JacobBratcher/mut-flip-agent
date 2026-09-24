@@ -2,6 +2,12 @@
 
 Watches Madden Ultimate Team prices on [mut.gg](https://www.mut.gg) (PC market) and posts a **🎯 Snipe** to Discord the moment a card is listed for Buy Now far enough under its resale value to flip for a profit after tax.
 
+It also keeps you on top of the market as a whole:
+- **📉 / 📈 Crash and bump alerts** (instant, `@here`) when the median card price moves `market.alert_pct` (default 8%) in 24h, measured across every card it tracks so one card can't trigger it. Crashes are buy windows; bumps are sell windows.
+- **📊 Daily report** at `market.report_hour` (default 9 AM): market change over 24h and 7d, biggest drops and gains, new mut.gg promos, live Twitch drops, and yesterday's snipes.
+- **🆕 New promos** posted as mut.gg publishes them (checked every 30 min).
+- **🎁 Twitch drop reminders** (`@here`) when a Madden drop campaign goes live, from [twitchdrops.app](https://twitchdrops.app/game/madden-nfl-27) (checked every 3 h).
+
 Optional, off by default: alerts on cheap *completed* sales (`flip.sale_alerts`; someone already bought those, so there's nothing to snipe) and a daily long-term investment digest (`invest.enabled`).
 
 Runs 24/7 as a Home Assistant add-on or a plain Docker container. Data access is used with mut.gg's permission.

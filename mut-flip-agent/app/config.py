@@ -29,6 +29,10 @@ DEFAULTS = {
         "min_days_history": 5, "min_drawdown": 0.25, "min_daily_sales": 3,
         "recovery_target": 0.5, "top_n": 10,
     },
+    "market": {
+        "report": True, "report_hour": 9, "alert_pct": 8,
+        "news": True, "twitch_drops": True,
+    },
     "tiers": {
         "watch_minutes": 2, "hot_minutes": 10, "cold_hours": 24,
         "hot_min_value": 25000, "hot_min_daily_sales": 5,

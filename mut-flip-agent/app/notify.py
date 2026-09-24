@@ -12,6 +12,30 @@ def coins(n):
     return f"{int(n):,}"
 
 
+def _pct(x):
+    return "n/a" if x is None else f"{x * 100:+.1f}%"
+
+
+def verdict(change, threshold):
+    """Plain-language read of a 24h market move."""
+    if change is None:
+        return "Not enough data yet"
+    if change <= -threshold:
+        return "📉 Crash: buy window"
+    if change >= threshold:
+        return "📈 Bump: sell window"
+    if change <= -0.03:
+        return "Drifting down"
+    if change >= 0.03:
+        return "Drifting up"
+    return "Steady"
+
+
+def _movers(ms):
+    return "\n".join(f"[{m.name}]({m.url}) {m.change * 100:+.0f}% → {coins(m.now_price)}"
+                     for m in ms) or "None"
+
+
 class Discord:
     def __init__(self, url):
         self.url = url
@@ -98,3 +122,69 @@ class Discord:
 
     def status(self, text, color=RED):
         self.send([{"title": "MUT Flip Agent", "description": text, "color": color}])
+
+    # ------------------------------------------------------------- market
+    def news(self, article, promo):
+        embed = {
+            "title": ("🆕 New promo: " if promo else "🗞️ ") + article.title,
+            "url": article.url,
+            "color": GOLD if promo else BLUE,
+            "footer": {"text": "mut.gg news"},
+        }
+        if promo:
+            embed["description"] = ("New cards usually pull prices down for a few hours while packs "
+                                    "get opened, so expect more snipes.")
+        self.send([embed])
+
+
+    def drops(self, text):
+        self.send([{
+            "title": "🎁 Twitch drop live",
+            "url": "https://twitchdrops.app/game/madden-nfl-27",
+            "color": 0x9146FF,
+            "description": (f"{text}\n\nWatch a Madden stream on Twitch with your EA account linked, "
+                            "then claim it in your Twitch drops inventory."),
+        }], content="@here")
+
+
+    def market_alert(self, kind, move, platform):
+        down = kind == "crash"
+        self.send([{
+            "title": (f"📉 Market crash: {_pct(move.change_24h)} in 24h" if down
+                      else f"📈 Market bump: {_pct(move.change_24h)} in 24h"),
+            "color": RED if down else GREEN,
+            "description": (f"Median price change across {move.cards_24h} cards. "
+                            + ("Crashes are usually the best time to buy cards you want to hold; "
+                               "snipe resale values already reflect the drop." if down else
+                               "A good window to sell cards you're holding before prices settle.")),
+            "fields": [{"name": "Biggest drops" if down else "Biggest gains",
+                        "value": _movers(move.fallers if down else move.risers)}],
+            "footer": {"text": f"{platform.upper()} • market alert"},
+        }], content="@here")
+
+
+    def market_report(self, move, news, drops, snipes, platform, threshold=0.08):
+        promos = [a for a in news]
+        promo_text = "\n".join(f"[{a.title}]({a.url})" for a in promos[:6]) or "None in the last 24h"
+        if snipes:
+            best = max(snipes, key=lambda r: r["profit"])
+            snipe_text = (f"{len(snipes)} found, {coins(sum(r['profit'] for r in snipes))} total profit\n"
+                          f"Best: [{best['name']}]({best['url']}) +{coins(best['profit'])}")
+        else:
+            snipe_text = "None in the last 24h"
+        self.send([{
+            "title": "📊 Daily MUT market report",
+            "color": BLUE,
+            "description": f"**{verdict(move.change_24h, threshold)}**",
+            "fields": [
+                {"name": "Market 24h", "value": _pct(move.change_24h), "inline": True},
+                {"name": "Market 7d", "value": _pct(move.change_7d), "inline": True},
+                {"name": "Cards measured", "value": str(move.cards_24h), "inline": True},
+                {"name": "Biggest drops", "value": _movers(move.fallers)},
+                {"name": "Biggest gains", "value": _movers(move.risers)},
+                {"name": "New on mut.gg", "value": promo_text[:1024]},
+                {"name": "Twitch drops", "value": drops or "None live"},
+                {"name": "Snipes", "value": snipe_text},
+            ],
+            "footer": {"text": f"{platform.upper()} • daily report"},
+        }])

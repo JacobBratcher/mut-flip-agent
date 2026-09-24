@@ -19,10 +19,19 @@ SENSORS = [
     ("checks_today", "Price checks today", "mdi:counter", {"state_class": "total_increasing"}),
     ("flips_24h", "Flips 24h", "mdi:cash-fast", {"state_class": "measurement",
                                                    "json_attributes_topic": f"{PREFIX}/flips"}),
-    ("invest_picks", "Investment picks", "mdi:chart-line", {"state_class": "measurement",
-                                                            "json_attributes_topic": f"{PREFIX}/picks"}),
+    ("market_24h", "Market 24h", "mdi:chart-line-variant",
+     {"state_class": "measurement", "unit_of_measurement": "%",
+      "json_attributes_topic": f"{PREFIX}/market"}),
+    ("market_7d", "Market 7d", "mdi:chart-timeline-variant",
+     {"state_class": "measurement", "unit_of_measurement": "%"}),
+    ("twitch_drop", "Twitch drop", "mdi:twitch", {"json_attributes_topic": f"{PREFIX}/drops"}),
+    ("promos_24h", "New on mut.gg 24h", "mdi:newspaper-variant-outline",
+     {"state_class": "measurement", "json_attributes_topic": f"{PREFIX}/news"}),
     ("last_price_update", "Last price update", "mdi:clock-check-outline", {"device_class": "timestamp"}),
 ]
+
+
+RETIRED = ["invest_picks"]
 
 
 def _broker():
@@ -70,11 +79,15 @@ class HA:
                 "icon": icon, "device": DEVICE, **extra,
             }
             client.publish(f"homeassistant/sensor/{PREFIX}/{key}/config", json.dumps(cfg), retain=True)
+        for gone in RETIRED:     # an empty retained config removes the entity from HA
+            client.publish(f"homeassistant/sensor/{PREFIX}/{gone}/config", "", retain=True)
         client.publish(f"{PREFIX}/availability", "online", retain=True)
 
-    def publish(self, state: dict, flips: list, picks: list):
+    def publish(self, state: dict, flips: list, picks: list, extra: dict | None = None):
         if not self.client:
             return
+        for topic, payload in (extra or {}).items():
+            self.client.publish(f"{PREFIX}/{topic}", json.dumps(payload), retain=True)
         self.client.publish(f"{PREFIX}/state", json.dumps(state), retain=True)
         self.client.publish(f"{PREFIX}/flips", json.dumps({"flips": flips}), retain=True)
         self.client.publish(f"{PREFIX}/picks", json.dumps({"picks": picks}), retain=True)

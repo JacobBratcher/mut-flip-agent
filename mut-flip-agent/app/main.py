@@ -1,4 +1,4 @@
-"""Scheduler loop: discover items, poll prices by tier, alert flips, send daily digest."""
+"""Scheduler loop: discover items, poll prices by tier, alert snipes, report on the market."""
 import json
 import logging
 import threading
@@ -7,7 +7,7 @@ from datetime import datetime
 
 import requests
 
-from . import analysis, config
+from . import analysis, config, market
 from .client import Blocked, MutGG, normalize_watch, parse_live, parse_sales
 from .db import DB, ts
 from .ha import HA
@@ -38,6 +38,12 @@ class Agent:
         self.last_ingest = 0
         self.feeder_state = ""
         self.lock = threading.RLock()
+        self.web = requests.Session()
+        self.web.headers["User-Agent"] = "MUT-Flip-Agent (personal market report)"
+        self.move = None
+        self.drops = None
+        self.news = []
+        self.next = {"news": 0, "drops": 0, "market": 0}
 
     # ---------------------------------------------------------------- setup
     def sync_items(self):
@@ -185,8 +191,77 @@ class Agent:
         picks = self.compute_picks()
         self.discord.digest(picks, self.cfg["platform"])
         self.db.put("last_digest", today)
-        self.db.prune(max(iv["window_days"], 7) + 2)
         log.info("Digest sent with %d picks", len(picks))
+
+    # --------------------------------------------------------------- market
+    def maybe_market(self):
+        """News every 30 min, Twitch drops every 3 h, market index hourly, report daily."""
+        m, now = self.cfg["market"], time.time()
+        if m["news"] and now >= self.next["news"]:
+            self.next["news"] = now + 1800
+            self._check_news()
+        if m["twitch_drops"] and now >= self.next["drops"]:
+            self.next["drops"] = now + 3 * 3600
+            self._check_drops()
+        if now >= self.next["market"]:
+            self.next["market"] = now + 3600
+            self._check_market()
+        today = datetime.now().strftime("%Y-%m-%d")
+        if (m["report"] and datetime.now().hour >= m["report_hour"]
+                and self.db.get("last_report") != today and self.move is not None):
+            self.db.put("last_report", today)
+            day_ago = now - DAY
+            news = [a for a in self.news if a.published.timestamp() >= day_ago]
+            snipes = self.db.recent_flips(hours=24, limit=1000)
+            self.discord.market_report(self.move, news, self.drops, snipes, self.cfg["platform"])
+            keep = 10
+            if self.cfg["invest"]["enabled"]:
+                keep = max(keep, self.cfg["invest"]["window_days"] + 2)
+            self.db.prune(keep)
+            log.info("Market report sent")
+
+    def _check_news(self):
+        try:
+            articles = market.fetch_news(self.web)
+        except (requests.RequestException, ValueError) as e:
+            log.warning("News check failed: %s", e)
+            return
+        self.news = articles
+        seen_raw = self.db.get("news_seen")
+        seen = set(json.loads(seen_raw)) if seen_raw else None
+        if seen is not None:          # first run just records what's already out
+            for a in reversed(articles):
+                if a.url not in seen:
+                    self.discord.news(a, market.is_promo(a.title))
+                    log.info("NEWS %s", a.title)
+        urls = [a.url for a in articles] + [u for u in (seen or []) if u not in {a.url for a in articles}]
+        self.db.put("news_seen", json.dumps(urls[:100]))
+        self.last_publish = 0
+
+    def _check_drops(self):
+        try:
+            drops = market.fetch_drops(self.web)
+        except requests.RequestException as e:
+            log.warning("Twitch drops check failed: %s", e)
+            return
+        self.drops = drops
+        if drops and drops != self.db.get("drops_last"):
+            self.discord.drops(drops)
+            log.info("DROPS %s", drops)
+        self.db.put("drops_last", drops or "")
+        self.last_publish = 0
+
+    def _check_market(self):
+        now = time.time()
+        cards = [(r["uid"], r["name"], r["url"], self.db.sales_since(r["uid"], now - 9 * DAY))
+                 for r in self.db.all_items()]
+        self.move = market.market_move(cards, now)
+        kind = market.classify(self.move.change_24h, self.cfg["market"]["alert_pct"] / 100)
+        if kind and now - self.db.last_alert("market", kind) > 12 * 3600:
+            self.discord.market_alert(kind, self.move, self.cfg["platform"])
+            self.db.log_alert("market", kind)
+            log.info("MARKET %s %.1f%%", kind, self.move.change_24h * 100)
+        self.last_publish = 0
 
     def publish(self):
         if time.time() - self.last_publish < 60:
@@ -219,8 +294,22 @@ class Agent:
             "flips_24h": len(self.db.recent_flips(limit=1000)),
             "invest_picks": len(picks),
             "last_price_update": self.last_price_ts,
+            "market_24h": _pct(self.move.change_24h if self.move else None),
+            "market_7d": _pct(self.move.change_7d if self.move else None),
+            "twitch_drop": "live" if self.drops else "none",
+            "promos_24h": len([a for a in self.news if time.time() - a.published.timestamp() < DAY]),
         }
-        self.ha.publish(state, flips, picks)
+        extra = {
+            "market": {
+                "fallers": [_mover(x) for x in (self.move.fallers if self.move else [])],
+                "risers": [_mover(x) for x in (self.move.risers if self.move else [])],
+                "cards": self.move.cards_24h if self.move else 0,
+            },
+            "drops": {"text": self.drops or "", "page": market.DROPS_PAGE},
+            "news": {"articles": [{"title": a.title, "url": a.url, "promo": market.is_promo(a.title),
+                                   "when": a.published.isoformat()} for a in self.news[:10]]},
+        }
+        self.ha.publish(state, flips, picks, extra)
 
     # ----------------------------------------------------------------- loop
     def run(self):
@@ -237,6 +326,7 @@ class Agent:
                         self.sync_items()
                         last_sync = time.time()
                     self.maybe_digest()
+                    self.maybe_market()
                     self.publish()
                 if self.cfg["fetch_mode"] == "extension":
                     self.upgrade_names()
@@ -286,6 +376,14 @@ class Agent:
                 "your access token is set and that mut.gg has allowed your server.")
             self.db.put("last_block_alert", time.time())
         time.sleep(self.backoff)
+
+
+def _pct(x):
+    return round(x * 100, 1) if x is not None else None
+
+
+def _mover(m):
+    return {"name": m.name, "url": m.url, "price": m.now_price, "change": round(m.change * 100, 1)}
 
 
 def run():
