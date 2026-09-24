@@ -41,7 +41,8 @@ def test_flip_alert_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     cfg = DEFAULTS | {"discord_webhook_url": "x",
                       "watchlist": ["https://www.mut.gg/players/12562-tj-watt/27-162004004/"],
-                      "discover_all_players": False}
+                      "discover_all_players": False,
+                      "flip": DEFAULTS["flip"] | {"sale_alerts": True}}
     agent = main.Agent(cfg)
     agent.api, agent.discord = FakeAPI(), FakeDiscord()
     agent.sync_items()
@@ -99,3 +100,30 @@ def test_listing_then_sale_alerts_once(tmp_path, monkeypatch):
     sold = [{"soldPrice": 360_000, "soldDate": iso(0.01)}] + sales
     agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": sold}})
     assert agent.discord.flips == [] and len(agent.discord.listings) == 1
+
+
+def test_snipes_only_by_default(tmp_path, monkeypatch):
+    """A cheap sale is already gone, so by default it must not alert; a live listing must."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    agent = main.Agent(DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False})
+
+    class Disc(FakeDiscord):
+        def __init__(self):
+            super().__init__(); self.listings = []
+        def listing(self, name, url, d, platform):
+            self.listings.append(d)
+
+    agent.discord = Disc()
+    agent.db.upsert_item("27-1", "")
+    sales = [{"soldPrice": 500_000, "soldDate": iso(h)} for h in range(2, 40, 3)]
+    agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": sales}})
+    cheap_sale = [{"soldPrice": 300_000, "soldDate": iso(0.01)}] + sales
+    agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": cheap_sale}})
+    assert agent.discord.flips == []
+
+    end = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+    agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": cheap_sale,
+        "liveAuctions": [{"buyNowPrice": 350_000, "endDate": end}]}})
+    assert len(agent.discord.listings) == 1
+    row = agent.db.recent_flips()[0]
+    assert row["ends"] and row["buy"] == 350_000

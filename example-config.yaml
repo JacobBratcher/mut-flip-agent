@@ -17,9 +17,10 @@ flip:
   lookback_hours: 168              # how far back to look for the latest sales
   min_sales: 3                     # sales needed in that window before a card is priced
   alert_cooldown_hours: 6
+  sale_alerts: false                # also alert on cheap sales (already bought, so not snipeable)
   max_buy_budget: 0               # 0 = no cap
 invest:
-  enabled: true
+  enabled: false                    # long-term investment digest
   digest_hour: 9
   window_days: 30
   min_days_history: 5

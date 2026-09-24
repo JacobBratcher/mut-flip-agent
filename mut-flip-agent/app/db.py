@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS flips (
     ts REAL, uid TEXT, name TEXT, url TEXT, buy INTEGER, max_buy INTEGER,
-    market INTEGER, profit INTEGER, roi REAL, falling INTEGER
+    market INTEGER, profit INTEGER, roi REAL, falling INTEGER, ends REAL
 );
 """
 
@@ -42,6 +42,8 @@ class DB:
         cols = {r["name"] for r in self.c.execute("PRAGMA table_info(items)")}
         if "score" not in cols:
             self.c.execute("ALTER TABLE items ADD COLUMN score REAL DEFAULT 0")
+        if "ends" not in {r["name"] for r in self.c.execute("PRAGMA table_info(flips)")}:
+            self.c.execute("ALTER TABLE flips ADD COLUMN ends REAL")
         self.c.commit()
 
     # items
@@ -144,10 +146,11 @@ class DB:
         self.c.commit()
 
     def log_flip(self, uid, name, url, f):
-        self.c.execute("INSERT INTO flips VALUES(?,?,?,?,?,?,?,?,?,?)",
-                       (time.time(), uid, name, url, getattr(f, "buy_seen", None) or f.bin_price,
-                        f.max_buy, f.market,
-                        f.profit, f.roi, int(f.falling)))
+        self.c.execute(
+            "INSERT INTO flips (ts, uid, name, url, buy, max_buy, market, profit, roi, falling, ends)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (time.time(), uid, name, url, getattr(f, "buy_seen", None) or f.bin_price,
+             f.max_buy, f.market, f.profit, f.roi, int(f.falling), getattr(f, "ends", None)))
         self.c.execute("DELETE FROM flips WHERE ts < ?", (time.time() - 7 * 86400,))
         self.c.commit()
 

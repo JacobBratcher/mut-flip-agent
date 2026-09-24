@@ -1,15 +1,14 @@
 # MUT Flip Agent
 
-Watches Madden Ultimate Team prices on [mut.gg](https://www.mut.gg) (PC market) and posts to Discord when:
+Watches Madden Ultimate Team prices on [mut.gg](https://www.mut.gg) (PC market) and posts a **🎯 Snipe** to Discord the moment a card is listed for Buy Now far enough under its resale value to flip for a profit after tax.
 
-- **💸 Flip:** a card sells well under its market value, so there are likely cheap listings to snipe and resell.
-- **📈 Investment (daily digest):** a liquid card has dropped hard from its recent high and has stopped falling, so it's a buy-and-hold candidate.
+Optional, off by default: alerts on cheap *completed* sales (`flip.sale_alerts`; someone already bought those, so there's nothing to snipe) and a daily long-term investment digest (`invest.enabled`).
 
 Runs 24/7 as a Home Assistant add-on or a plain Docker container. Data access is used with mut.gg's permission.
 
 ## How it decides
 
-**Flips**
+**Snipes**
 1. Resale value is what you could realistically sell for *right now*, not a slow average (PC has little volume):
    - the **cheapest competing Buy Now listing**, which you'd have to undercut to sell, so the estimate follows listings down immediately;
    - capped at **+10% over the last 3 sales**, so one optimistic seller can't inflate a flip.
@@ -18,7 +17,7 @@ Runs 24/7 as a Home Assistant add-on or a plain Docker container. Data access is
 4. Each alert shows the **max price to buy at**, **what to list it for**, and whether that resale price came from listings or sales.
 5. A listing that's alerted and then sells doesn't alert again as a cheap sale.
 
-**Investments** (sent once a day at `digest_hour`)
+**Investments** (off by default; sent once a day at `digest_hour` when `invest.enabled` is on)
 - At least `min_days_history` days of data and `min_daily_sales` sales/day (so you can actually sell later).
 - Down at least `min_drawdown` from its high in the window.
 - Not still dropping (yesterday wasn't more than 3% below the day before).
@@ -82,7 +81,7 @@ Via MQTT discovery (Mosquitto add-on), under a **MUT Flip Agent** device:
 
 ```bash
 cp .env.example .env              # add webhook + token
-cp config.example.yaml config.yaml
+cp example-config.yaml config.yaml
 docker compose up -d --build
 ```
 

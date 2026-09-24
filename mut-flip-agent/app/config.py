@@ -21,11 +21,11 @@ DEFAULTS = {
     "min_ovr": 83,
     "flip": {
         "min_profit": 10000, "min_roi": 0.08, "min_discount": 0.12,
-        "lookback_hours": 168, "min_sales": 3, "alert_cooldown_hours": 6,
+        "lookback_hours": 168, "min_sales": 3, "alert_cooldown_hours": 6, "sale_alerts": False,
         "max_buy_budget": 0,
     },
     "invest": {
-        "enabled": True, "digest_hour": 9, "window_days": 30,
+        "enabled": False, "digest_hour": 9, "window_days": 30,
         "min_days_history": 5, "min_drawdown": 0.25, "min_daily_sales": 3,
         "recovery_target": 0.5, "top_n": 10,
     },

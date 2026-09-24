@@ -56,7 +56,7 @@ class Discord:
     def listing(self, name, url, d, platform):
         warn = "\n⚠️ Market is sliding. Resell quickly or skip." if d.falling else ""
         embed = {
-            "title": f"🚨 Listed now: {name}",
+            "title": f"🎯 Snipe: {name}",
             "color": RED,
             "description": (f"Buy Now **{coins(d.bin_price)}**, {d.discount:.0%} under market. "
                             f"Ends <t:{int(d.ends)}:R>.{warn}"),

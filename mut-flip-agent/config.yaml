@@ -1,5 +1,5 @@
 name: MUT Flip Agent
-version: "1.4.0"
+version: "1.5.0"
 slug: mut_flip_agent
 description: Watches mut.gg PC prices and sends Discord alerts for flips and long-term investments.
 url: https://github.com/JacobBratcher/mut-flip-agent
@@ -36,8 +36,9 @@ options:
     min_sales: 3
     alert_cooldown_hours: 6
     max_buy_budget: 0
+    sale_alerts: false
   invest:
-    enabled: true
+    enabled: false
     digest_hour: 9
     window_days: 30
     min_days_history: 5
@@ -73,6 +74,7 @@ schema:
     min_sales: int(3,)
     alert_cooldown_hours: int(0,)
     max_buy_budget: int(0,)
+    sale_alerts: bool?
   invest:
     enabled: bool
     digest_hour: int(0,23)

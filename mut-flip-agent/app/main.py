@@ -115,6 +115,9 @@ class Agent:
         # A listing we already alerted on that then sells shows up as a "cheap sale";
         # don't alert the same card at the same price twice.
         already = signal and now - self.db.last_alert(uid, f"price:{signal.buy_seen}") < cooldown
+        # Off by default: a cheap *sale* means someone already bought it, so it can't be sniped.
+        if not self.cfg["flip"].get("sale_alerts"):
+            signal = None
         if signal and not already and now - self.db.last_alert(uid, "flip") > cooldown:
             row = self.ensure_name(row)
             self.discord.flip(row["name"] or uid, row["url"], signal, self.cfg["platform"])
@@ -192,7 +195,9 @@ class Agent:
         flips = [{"name": r["name"], "url": r["url"], "buy": r["buy"], "max_buy": r["max_buy"],
                   "market": r["market"], "profit": r["profit"], "roi": round(r["roi"], 3),
                   "falling": bool(r["falling"]),
-                  "when": datetime.fromtimestamp(r["ts"]).astimezone().isoformat()}
+                  "when": datetime.fromtimestamp(r["ts"]).astimezone().isoformat(),
+                  "ends": (datetime.fromtimestamp(r["ends"]).astimezone().isoformat()
+                           if r["ends"] else None)}
                  for r in self.db.recent_flips()]
         picks = [{"name": n, "url": u, "buy": p.current, "target": p.target, "high": p.high,
                   "profit": p.profit, "roi": round(p.roi, 3), "drawdown": round(p.drawdown, 3),
