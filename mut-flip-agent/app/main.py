@@ -16,6 +16,7 @@ from .notify import Discord
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("agent")
 DAY = 86400
+KEEP_DAYS = 35          # sales history kept: enough to learn promo reactions and weekday patterns
 
 
 class Agent:
@@ -44,6 +45,10 @@ class Agent:
         self.drops = None
         self.news = []
         self.videos = []
+        self.reactions = []
+        self.weekdays = {}
+        self.next_weekdays = 0
+        self._backfilling = False
         self.next = {"news": 0, "drops": 0, "market": 0, "youtube": 0}
 
     # ---------------------------------------------------------------- setup
@@ -221,7 +226,7 @@ class Agent:
             self.discord.market_report(self.move, news, self.drops, snipes, self.cfg["platform"],
                                        tips=self.tips(), videos=self.videos[:6],
                                        threshold=m["alert_pct"] / 100)
-            keep = 10
+            keep = KEEP_DAYS
             if self.cfg["invest"]["enabled"]:
                 keep = max(keep, self.cfg["invest"]["window_days"] + 2)
             self.db.prune(keep)
@@ -234,6 +239,8 @@ class Agent:
             log.warning("News check failed: %s", e)
             return
         self.news = articles
+        self._record_promos([(a.published.timestamp(), a.title) for a in articles
+                             if market.is_promo(a.title)])
         seen_raw = self.db.get("news_seen")
         seen = set(json.loads(seen_raw)) if seen_raw else None
         if seen is not None:          # first run just records what's already out
@@ -258,13 +265,42 @@ class Agent:
         self.db.put("drops_last", drops or "")
         self.last_publish = 0
 
+    def promo_events(self):
+        return [tuple(x) for x in json.loads(self.db.get("promo_events") or "[]")]
+
+    def _record_promos(self, found):
+        if self.db.get("promo_backfilled") is None and not self._backfilling:
+            # One-time read of recent article pages (slow on purpose), off the main loop.
+            self._backfilling = True
+            threading.Thread(target=self._backfill_promos, daemon=True).start()
+        events = {round(t): title for t, title in self.promo_events()}
+        for t, title in found:
+            events.setdefault(round(t), title)
+        keep = sorted((t, title) for t, title in events.items() if t >= time.time() - KEEP_DAYS * DAY)
+        self.db.put("promo_events", json.dumps(keep))
+
+    def _backfill_promos(self):
+        try:
+            found = market.backfill_promos(self.web, time.time() - KEEP_DAYS * DAY)
+        except (requests.RequestException, ValueError) as e:
+            log.warning("Promo backfill failed (will retry): %s", e)
+            self._backfilling = False
+            return
+        with self.lock:
+            self.db.put("promo_backfilled", "1")
+            self._record_promos(found)
+            self._backfilling = False
+        log.info("Backfilled %d promo releases", len(found))
+
     def promo_today(self):
         today = datetime.now().astimezone().date()
         return any(market.is_promo(a.title) and a.published.astimezone().date() == today
                    for a in self.news)
 
     def tips(self):
-        return market.timing_tips(datetime.now().astimezone(), self.promo_today())
+        return market.timing_tips(datetime.now().astimezone(), self.promo_today(),
+                                  self.reactions, self.weekdays,
+                                  market.promo_schedule(self.promo_events()))
 
     def _check_youtube(self):
         seen_raw = self.db.get("yt_seen")
@@ -307,9 +343,13 @@ class Agent:
 
     def _check_market(self):
         now = time.time()
-        cards = [(r["uid"], r["name"], r["url"], self.db.sales_since(r["uid"], now - 9 * DAY))
+        cards = [(r["uid"], r["name"], r["url"], self.db.sales_since(r["uid"], now - KEEP_DAYS * DAY))
                  for r in self.db.all_items()]
         self.move = market.market_move(cards, now)
+        self.reactions = market.promo_reactions(cards, self.promo_events(), now)
+        if now >= self.next_weekdays:
+            self.next_weekdays = now + 6 * 3600
+            self.weekdays = market.weekday_pattern(cards, now)
         kind = market.classify(self.move.change_24h, self.cfg["market"]["alert_pct"] / 100)
         if kind and now - self.db.last_alert("market", kind) > 12 * 3600:
             self.discord.market_alert(kind, self.move, self.cfg["platform"])
@@ -373,6 +413,13 @@ class Agent:
                 "programs": [{"program": p.program, "change": round(p.change * 100, 1),
                               "cards": p.cards} for p in (self.move.programs if self.move else [])],
                 "tips": self.tips(),
+                "promo_reactions": [{"title": r.title, "dip": round(r.dip * 100, 1),
+                                     "next_day": round(r.next_day * 100, 1), "cards": r.cards,
+                                     "when": datetime.fromtimestamp(r.ts).astimezone().isoformat()}
+                                    for r in self.reactions[-5:]],
+                "weekdays": {market.DAYS[k]: round(v * 100, 1) for k, v in sorted(self.weekdays.items())},
+                "schedule": [{"program": p, "day": market.DAYS[wd], "time": t}
+                             for p, wd, t in market.promo_schedule(self.promo_events())],
             },
             "youtube": {"videos": [{"title": v.title, "url": v.url, "channel": v.channel,
                                     "kind": youtube.classify(v.title),

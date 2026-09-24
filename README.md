@@ -8,7 +8,11 @@ It also keeps you on top of the market as a whole:
 - **📊 Daily report** at `market.report_hour` (default 9 AM): market change over 24h and 7d, biggest drops and gains, new mut.gg promos, live Twitch drops, and yesterday's snipes.
 - **🆕 New promos** posted as mut.gg publishes them (checked every 30 min).
 - **📺 MUT YouTubers:** follows `youtube_channels`, by default [GutFoxx](https://www.youtube.com/@GutFoxx) (market strategy), [Popular Stranger](https://www.youtube.com/@iampopularstranger) (leaks and content schedules), [Moshi](https://www.youtube.com/@MoshiMadden) (daily updates and leaks) and [Swift](https://www.youtube.com/@SwiftMadden) (state of MUT, coin missions). Add any `@handle`. 💰 market/coin videos post instantly; 🔮 leak/upcoming-content videos post at most once per 8h per channel; everything else waits for the daily report.
-- **What to do today** in the daily report: promo-day dip and next-day bounce, midweek buying / weekend selling, and the big seasonal crashes (Road to the Playoffs, Team of the Year + Super Bowl, NFL Draft), based on [GutFoxx's market guides](https://gutfoxx.com/tag/madden-market/) and the mut.gg community.
+- **What to do today**, learned from this season's own sales instead of old guides:
+  - **Promo schedule:** release times read from mut.gg articles (backfilled 5 weeks on first start), so it warns the day before, e.g. "Tomorrow (Wed): Team of the Week ~10:48 AM".
+  - **How promos actually move prices on PC:** for each release, how far existing cards moved in the first 12h and where they were the next day ("after the last 5 promos: -9% in 12h, -3% next day, bounced 4 of 5 times").
+  - **Cheapest / priciest weekday**, once it has 2+ weeks of data.
+  - The one outside rule kept (promos dip, then recover within a day or two) is from a current [MUT 27 auction house guide](https://timesaver.gg/blog/madden-nfl-27-auction-house-guide-make-coins-flipping). Sales history is kept 35 days for this.
 - **🎁 Twitch drop reminders** (`@here`) when a Madden drop campaign goes live, from [twitchdrops.app](https://twitchdrops.app/game/madden-nfl-27) (checked every 3 h).
 
 Optional, off by default: alerts on cheap *completed* sales (`flip.sale_alerts`; someone already bought those, so there's nothing to snipe) and a daily long-term investment digest (`invest.enabled`).

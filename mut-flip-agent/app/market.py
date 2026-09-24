@@ -135,45 +135,114 @@ def classify(change, threshold):
 
 
 # ------------------------------------------------------------------ playbook
-# Timing rules from GutFoxx (gutfoxx.com/tag/madden-market) and the mut.gg community.
-SEASON_CRASHES = [
-    # (start month, start day, end month, end day, what)
-    (10, 20, 11, 10, "Road to the Playoffs: historically a 50%+ crash on most cards"),
-    (1, 1, 2, 15, "Team of the Year + Super Bowl: the biggest crash of the year"),
-    (4, 15, 5, 5, "NFL Draft program: most non-top cards sink as players chase coins"),
-]
+# Learned from this season's own sales, not from old guides. The only outside
+# rule kept is that prices dip when a promo drops and recover within a day or two,
+# which a current MUT 27 guide confirms (timesaver.gg auction house guide, 2026).
+PROMO_SOURCE = "https://timesaver.gg/blog/madden-nfl-27-auction-house-guide-make-coins-flipping"
+CLUSTER = 3 * HOUR          # promos released together (TOTW + Team Builders) count once
 
 
-def season_warning(today, lead_days=14):
-    """A heads-up when a historically big crash window is near or underway."""
-    from datetime import date
-    for sm, sd, em, ed, what in SEASON_CRASHES:
-        for y in (today.year - 1, today.year, today.year + 1):
-            start = date(y, sm, sd)
-            end = date(y if (em, ed) >= (sm, sd) else y + 1, em, ed)
-            if start <= today <= end:
-                return f"Now: {what}. Don't hold cards; flip fast."
-            days = (start - today).days
-            if 0 < days <= lead_days:
-                return f"In {days} days: {what}. Sell anything you're holding before it starts."
-    return None
+@dataclass
+class PromoReaction:
+    ts: float
+    title: str
+    dip: float          # median change 2-14h after the drop vs. the 6h before
+    next_day: float     # median change 24-40h after vs. before
+    cards: int
 
 
-def timing_tips(now_dt, promo_today):
-    """Plain-language timing tips for today."""
+def _median_in(sales, start, end):
+    ps = [p for p, t in sales if start <= t < end]
+    return median(ps) if len(ps) >= MIN_SALES else None
+
+
+def promo_reactions(cards, promos, now):
+    """promos: [(ts, title)]. For each promo with a full next day behind it, how the cards
+    that already existed moved: the dip right after, and where they were the next day."""
+    events = []
+    for ts, title in sorted(promos):
+        if events and ts - events[-1][0] < CLUSTER:
+            events[-1][1].append(title)
+        else:
+            events.append((ts, [title]))
+    out = []
+    for ts, titles in events:
+        if now < ts + 40 * HOUR:
+            continue
+        dips, nexts = [], []
+        for _uid, _name, _url, sales in cards:
+            pre = _median_in(sales, ts - 6 * HOUR, ts)
+            dip = _median_in(sales, ts + 2 * HOUR, ts + 14 * HOUR)
+            nxt = _median_in(sales, ts + 24 * HOUR, ts + 40 * HOUR)
+            if pre and dip and nxt:
+                dips.append(dip / pre - 1)
+                nexts.append(nxt / pre - 1)
+        if len(dips) >= MIN_CARDS:
+            out.append(PromoReaction(ts, " + ".join(titles), median(dips), median(nexts), len(dips)))
+    return out
+
+
+def weekday_pattern(cards, now, days=28):
+    """Median price by weekday relative to each card's own weekly level, across cards.
+    Returns {0..6: deviation} only with 2+ weeks of data; Mon=0."""
+    by_day = {}
+    for _uid, _name, _url, sales in cards:
+        daily = {}
+        for p, t in sales:
+            if t >= now - days * DAY:
+                daily.setdefault(int(t // DAY), []).append(p)
+        med = {d: median(v) for d, v in daily.items() if len(v) >= MIN_SALES}
+        for d, m in med.items():
+            around = [med[x] for x in range(d - 3, d + 4) if x in med]
+            if len(around) >= 5:
+                wd = datetime.fromtimestamp(d * DAY).weekday()
+                by_day.setdefault(wd, []).append(m / median(around) - 1)
+    if not by_day or min(len(v) for v in by_day.values()) < 20 or len(by_day) < 7:
+        return {}
+    return {wd: median(v) for wd, v in by_day.items()}
+
+
+DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def timing_tips(now_dt, promo_today, reactions=(), weekdays=None, schedule=()):
+    """Plain-language tips for today, from what this season's market actually did."""
     tips = []
-    if promo_today:
-        tips.append("Promo day: older cards dip while packs get ripped. Buy the dip; prices "
-                    "usually bounce the next day, so sell into that bounce (GutFoxx).")
-    wd = now_dt.weekday()           # Mon=0
-    if wd in (1, 2, 3):
-        tips.append("Midweek (Tue-Thu) is usually the cheapest time to buy.")
-    elif wd in (4, 5):
-        tips.append("Fri/Sat prices usually run higher as people upgrade for the weekend: "
-                    "good time to sell.")
-    warn = season_warning(now_dt.date())
-    if warn:
-        tips.append(warn)
+    tomorrow = (now_dt.weekday() + 1) % 7
+    nxt = [f"{p} ~{t}" for p, wd, t in schedule if wd == tomorrow]
+    if nxt:
+        tips.append(f"Tomorrow ({DAYS[tomorrow]}): {', '.join(nxt)} usually drops. "
+                    "Keep coins free for the dip.")
+    recent = list(reactions)[-5:]
+    if len(recent) >= 2:
+        dip = median(r.dip for r in recent)
+        nxt = median(r.next_day for r in recent)
+        bounced = sum(1 for r in recent if r.next_day > r.dip)
+        summary = (f"After the last {len(recent)} promos on PC, existing cards moved "
+                   f"{dip * 100:+.0f}% in the first 12h and sat at {nxt * 100:+.0f}% the next day "
+                   f"(bounced {bounced} of {len(recent)} times).")
+        if promo_today:
+            advice = (" Buy the dip today and sell into tomorrow's bounce." if nxt > dip
+                      else " The dip has kept going the next day, so don't rush to buy.")
+            tips.append("Promo day. " + summary + advice)
+        else:
+            tips.append(summary)
+    elif promo_today:
+        tips.append("Promo day: existing cards usually dip while packs get opened and recover "
+                    "within a day or two. Buy the dip, sell into the recovery. "
+                    "(Still measuring how PC reacts this season.)")
+    if weekdays:
+        lo = min(weekdays, key=weekdays.get)
+        hi = max(weekdays, key=weekdays.get)
+        if weekdays[hi] - weekdays[lo] >= 0.03:
+            today = now_dt.weekday()
+            line = (f"This season, prices run lowest on {DAYS[lo]} ({weekdays[lo] * 100:+.0f}%) "
+                    f"and highest on {DAYS[hi]} ({weekdays[hi] * 100:+.0f}%).")
+            if today == lo:
+                line += " Today's a good day to buy."
+            elif today == hi:
+                line += " Today's a good day to sell."
+            tips.append(line)
     return tips
 
 
@@ -190,9 +259,38 @@ PROMO_WORDS = ("team of the week", "totw", "ltd", "legends", "part ", "program",
                "pregame", "heroes", "collectors", "golden ticket", "zero chill", "most feared")
 
 
+NOT_PROMO = ("contest", "prediction", "how to", "guide", "tier list", "ranking", "best ",
+             "what are", "explained", "review")
+
+
 def is_promo(title):
     t = title.lower()
-    return any(w in t for w in PROMO_WORDS)
+    return any(w in t for w in PROMO_WORDS) and not any(w in t for w in NOT_PROMO)
+
+
+def program_name(title):
+    """'Team of the Week 2: Travis Kelce…' -> 'Team of the Week'; 'Unreal Moments Part 2.5: …' -> 'Unreal Moments'."""
+    head = title.split(":")[0]
+    head = re.sub(r"\s+(Part\s+[\d.]+|\d+(\.\d+)?)$", "", head.strip(), flags=re.I)
+    return re.sub(r"^Preseason\s+", "", head.strip(), flags=re.I)
+
+
+def promo_schedule(promos, min_repeats=2, window_min=90):
+    """Programs that keep dropping on the same weekday around the same time:
+    [(program, weekday, 'H:MM AM')], learned from observed release times."""
+    by = {}
+    for ts, title in promos:
+        dt = datetime.fromtimestamp(ts)
+        by.setdefault((program_name(title), dt.weekday()), []).append(dt.hour * 60 + dt.minute)
+    out = []
+    for (prog, wd), mins in by.items():
+        # anchor on the release time with the most others near it (ignores one-off odd times)
+        mid = max(mins, key=lambda m: sum(abs(x - m) <= window_min for x in mins))
+        close = [m for m in mins if abs(m - mid) <= window_min]
+        if len(close) >= min_repeats:
+            h, m = divmod(int(median(close)), 60)
+            out.append((prog, wd, datetime(2000, 1, 1, h, m).strftime("%-I:%M %p")))
+    return sorted(out, key=lambda x: (x[1], x[2]))
 
 
 def parse_news_sitemap(xml_text) -> list[Article]:
@@ -215,6 +313,43 @@ def parse_news_sitemap(xml_text) -> list[Article]:
         if loc and title and pub:
             out.append(Article(loc, title, pub))
     return sorted(out, key=lambda a: a.published, reverse=True)
+
+
+def parse_article(page):
+    """(title, published) from a mut.gg article page's JSON-LD and og:title."""
+    date = re.search(r'"datePublished":\s*"([^"]+)"', page)
+    title = re.search(r'<meta property="og:title" content="([^"]+)"', page)
+    if not date or not title:
+        return None
+    t = re.sub(r"\s*-\s*MUT\.GG\s*$", "", html.unescape(title.group(1)))
+    try:
+        return t, datetime.fromisoformat(date.group(1))
+    except ValueError:
+        return None
+
+
+def backfill_promos(session: requests.Session, since_ts, limit=25, pause=2.0):
+    """Promo release times from recent articles (the archive sitemap has no dates, so read
+    each article page, newest first, politely). Stops at the first article older than since."""
+    import time as _time
+    r = session.get("https://www.mut.gg/sitemap-all-news.xml", timeout=30)
+    r.raise_for_status()
+    locs = re.findall(r"<loc>([^<]+)</loc>", r.text)[:limit]
+    out = []
+    for url in locs:
+        _time.sleep(pause)
+        page = session.get(url, timeout=30)
+        if page.status_code != 200:
+            continue
+        got = parse_article(page.text)
+        if not got:
+            continue
+        title, when = got
+        if when.timestamp() < since_ts:
+            break
+        if is_promo(title):
+            out.append((when.timestamp(), title))
+    return out
 
 
 def fetch_news(session: requests.Session) -> list[Article]:

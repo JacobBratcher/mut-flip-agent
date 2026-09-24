@@ -102,6 +102,7 @@ def agent(tmp_path, monkeypatch, **market_cfg):
                       "market": DEFAULTS["market"] | market_cfg, "youtube_channels": []}
     a = main.Agent(cfg)
     a.discord = Disc()
+    a.db.put("promo_backfilled", "1")
     return a
 
 
@@ -173,14 +174,66 @@ def test_program_split_shows_opposite_moves():
     assert progs == {"Legends": -0.3, "Team Builders": 0.6}
 
 
-def test_timing_tips():
+def _promo_cards(pre, dip, nxt, n=12, ts=None):
+    """Cards that sold at `pre` before a promo at ts, `dip` right after, `nxt` the next day."""
+    ts = ts or NOW - 3 * D
+    cards = []
+    for i in range(n):
+        sales = [(pre, ts - h * H) for h in (1, 3, 5)]
+        sales += [(dip, ts + h * H) for h in (4, 8, 12)]
+        sales += [(nxt, ts + h * H) for h in (26, 30, 36)]
+        cards.append((f"27-{i}", f"P{i} Core 84 OVR", f"https://www.mut.gg/players/{i}-p{i}/27-{i}/", sales))
+    return cards, ts
+
+
+def test_promo_reaction_dip_then_bounce():
+    cards, ts = _promo_cards(100_000, 88_000, 96_000)
+    r = market.promo_reactions(cards, [(ts, "TOTW 2"), (ts + 600, "Team Builders 2")], NOW)
+    assert len(r) == 1 and r[0].title == "TOTW 2 + Team Builders 2"      # same-time drops count once
+    assert round(r[0].dip, 2) == -0.12 and round(r[0].next_day, 2) == -0.04 and r[0].cards == 12
+
+
+def test_promo_too_recent_is_not_scored():
+    cards, ts = _promo_cards(100_000, 88_000, 96_000, ts=NOW - 20 * H)
+    assert market.promo_reactions(cards, [(ts, "TOTW 3")], NOW) == []
+
+
+def test_timing_tips_use_measured_reactions():
     from datetime import datetime
-    wed = datetime(2026, 9, 23, 12)
-    tips = market.timing_tips(wed, promo_today=True)
-    assert any("Promo day" in t for t in tips) and any("Midweek" in t for t in tips)
-    fri = datetime(2026, 10, 9, 12)
-    tips = market.timing_tips(fri, promo_today=False)
-    assert any("Fri/Sat" in t for t in tips) and any("Road to the Playoffs" in t for t in tips)
+    r = [market.PromoReaction(NOW - 9 * D, "TOTW 1", -0.10, -0.03, 40),
+         market.PromoReaction(NOW - 2 * D, "TOTW 2", -0.14, -0.05, 40)]
+    tips = market.timing_tips(datetime(2026, 9, 30, 12), True, r)
+    assert "last 2 promos" in tips[0] and "-12%" in tips[0] and "bounced 2 of 2" in tips[0]
+    assert "sell into tomorrow's bounce" in tips[0]
+    falling = [market.PromoReaction(NOW - 9 * D, "a", -0.10, -0.15, 40),
+               market.PromoReaction(NOW - 2 * D, "b", -0.08, -0.12, 40)]
+    assert "don't rush" in market.timing_tips(datetime(2026, 9, 30, 12), True, falling)[0]
+    # nothing measured yet: generic, sourced line on promo days only, no weekday claims
+    assert "Still measuring" in market.timing_tips(datetime(2026, 9, 30, 12), True)[0]
+    assert market.timing_tips(datetime(2026, 10, 2, 12), False) == []
+
+
+def test_weekday_pattern_needs_two_weeks_and_finds_cheap_day():
+    from datetime import datetime
+    cards = []
+    for i in range(25):
+        sales = []
+        for d in range(1, 22):
+            t = NOW - d * D
+            p = 90_000 if datetime.fromtimestamp((t // D) * D).weekday() == 1 else 100_000   # Tuesdays cheap
+            sales += [(p, t), (p, t + 60), (p, t + 120)]
+        cards.append((f"27-{i}", "x", "", sales))
+    w = market.weekday_pattern(cards, NOW)
+    assert min(w, key=w.get) == 1 and round(w[1], 2) == -0.10
+    short = [(u, n, url, [s for s in sales if s[1] > NOW - 6 * D]) for u, n, url, sales in cards]
+    assert market.weekday_pattern(short, NOW) == {}
+
+
+def test_parse_article_date():
+    page = ('<meta property="og:title" content="Team of the Week 2: Travis Kelce and More - MUT.GG">'
+            '<script>{"datePublished": "2026-09-23T10:52:04.324340-04:00"}</script>')
+    title, when = market.parse_article(page)
+    assert title == "Team of the Week 2: Travis Kelce and More" and when.hour == 10
 
 
 def test_program_alert_fires_once(tmp_path, monkeypatch):
@@ -247,3 +300,23 @@ def test_chatty_channel_leak_videos_are_rate_limited(tmp_path, monkeypatch):
     feed.insert(0, youtube.Video("e" * 11, "Best way to make coins today", "Moshi"))
     a._check_youtube()
     assert posted.count("leak") == 1 and posted.count("market") == 1
+
+
+def test_promo_filter_and_schedule_from_real_releases():
+    from datetime import datetime
+    assert not market.is_promo("MCS Pro League Game Time Prediction Contest")
+    assert market.program_name("Unreal Moments Part 2.5: Jahmyr Gibbs") == "Unreal Moments"
+    assert market.program_name("Team of the Week 2: Travis Kelce") == "Team of the Week"
+    ts = lambda s: datetime.strptime(s, "%Y-%m-%d %H:%M").timestamp()
+    promos = [(ts("2026-09-02 10:44"), "Preseason Team of the Week: A"),
+              (ts("2026-09-16 15:00"), "Team of the Week 1: B"),
+              (ts("2026-09-23 10:52"), "Team of the Week 2: C"),
+              (ts("2026-09-30 10:47"), "Team of the Week 3: D"),
+              (ts("2026-09-12 11:03"), "Legends: E"), (ts("2026-09-19 10:48"), "Legends: F"),
+              (ts("2026-09-17 10:55"), "Game Time Part 2: G")]
+    sched = market.promo_schedule(promos)
+    assert ("Team of the Week", 2, "10:47 AM") in sched            # Preseason merged, 3:00 PM outlier ignored
+    assert ("Legends", 5, "10:55 AM") in sched
+    assert all(p != "Game Time" for p, _, _ in sched)              # seen once: not a pattern
+    tips = market.timing_tips(datetime(2026, 10, 6, 20), False, schedule=sched)   # a Tuesday
+    assert tips[0].startswith("Tomorrow (Wed): Team of the Week ~10:47 AM")
