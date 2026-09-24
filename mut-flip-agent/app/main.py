@@ -219,7 +219,7 @@ class Agent:
             news = [a for a in self.news if a.published.timestamp() >= day_ago]
             snipes = self.db.recent_flips(hours=24, limit=1000)
             self.discord.market_report(self.move, news, self.drops, snipes, self.cfg["platform"],
-                                       tips=self.tips(), videos=self.videos[:4],
+                                       tips=self.tips(), videos=self.videos[:6],
                                        threshold=m["alert_pct"] / 100)
             keep = 10
             if self.cfg["invest"]["enabled"]:
@@ -284,14 +284,23 @@ class Agent:
                 continue
             if cid in known:                         # first look at a channel is silent
                 for v in reversed(vids):
-                    if v.id not in seen:
-                        self.discord.video(v, youtube.is_market_video(v.title))
-                        log.info("VIDEO %s: %s", v.channel, v.title)
+                    kind = youtube.classify(v.title)
+                    if v.id in seen or not kind:         # others wait for the daily report
+                        continue
+                    # market videos always post; leak/update videos at most once per 8h per
+                    # channel, so a creator who uploads 4x a day doesn't flood Discord
+                    if kind == "leak" and time.time() - self.db.last_alert("yt", cid) < 8 * 3600:
+                        continue
+                    self.discord.video(v, kind)
+                    if kind == "leak":
+                        self.db.log_alert("yt", cid)
+                    log.info("VIDEO %s: %s", v.channel, v.title)
             known.add(cid)
             seen.update(v.id for v in vids)
             found.extend(vids[:3])
         if found:
-            self.videos = found
+            # flagged (market / leak) first, then the rest, newest first within each
+            self.videos = sorted(found, key=lambda v: youtube.classify(v.title) is None)
         self.db.put("yt_seen", json.dumps(sorted(seen)[-500:]))
         self.db.put("yt_channels_seen", json.dumps(sorted(known)))
         self.last_publish = 0
@@ -366,7 +375,7 @@ class Agent:
                 "tips": self.tips(),
             },
             "youtube": {"videos": [{"title": v.title, "url": v.url, "channel": v.channel,
-                                    "market": youtube.is_market_video(v.title),
+                                    "kind": youtube.classify(v.title),
                                     "when": v.published.isoformat() if v.published else None,
                                     "age": v.age} for v in self.videos]},
             "drops": {"text": self.drops or "", "page": market.DROPS_PAGE},

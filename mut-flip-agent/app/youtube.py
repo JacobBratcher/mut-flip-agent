@@ -15,8 +15,11 @@ UA = {"User-Agent": "Mozilla/5.0 (MUT-Flip-Agent; follows a few channels hourly)
       "Accept-Language": "en-US"}
 CHANNEL_ID = re.compile(r"^UC[\w-]{22}$")
 ATOM = {"a": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
-MARKET_WORDS = ("market", "crash", "invest", "sell", "buy", "coin", "flip", "snipe", "price",
-                "what to do", "content coming", "spend", "save", "hold", "profit", "cheap")
+# 💰 market/coins advice, and 🔮 leaks / upcoming content (what moves prices next).
+MARKET_WORDS = ("market", "crash", "invest", "sell", "coin", "flip", "snipe", "price", "profit",
+                "cheap", "spend", "save", "hold", "value", "what to do", "buy")
+LEAK_WORDS = ("leak", "schedule", "coming", "before", "increase", "reveal", "next",
+              "do this now", "do this first")
 
 
 @dataclass
@@ -32,9 +35,21 @@ class Video:
         return f"https://www.youtube.com/watch?v={self.id}"
 
 
-def is_market_video(title):
+def classify(title):
+    """'market', 'leak' or None. Only classified videos are posted instantly."""
     t = title.lower()
-    return any(w in t for w in MARKET_WORDS)
+    if any(w in t for w in MARKET_WORDS):
+        return "market"
+    if any(w in t for w in LEAK_WORDS):
+        return "leak"
+    return None
+
+
+ICON = {"market": "💰", "leak": "🔮", None: "📺"}
+
+
+def is_market_video(title):
+    return classify(title) == "market"
 
 
 def resolve(session: requests.Session, ident: str) -> str | None:

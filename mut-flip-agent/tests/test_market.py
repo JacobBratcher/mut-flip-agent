@@ -199,15 +199,20 @@ def test_youtube_first_look_silent_then_new_uploads(tmp_path, monkeypatch):
     a = agent(tmp_path, monkeypatch)
     a.cfg["youtube_channels"] = ["UCd0jBryyetpHJ5DhPlKQ_sA"]
     posted = []
-    a.discord.video = lambda v, market_related: posted.append((v.title, market_related))
+    a.discord.video = lambda v, kind: posted.append((v.title, kind))
     old = [youtube.Video("aaaaaaaaaaa", "Ranking The BEST QBs in MUT 27!", "GutFoxx")]
     monkeypatch.setattr(youtube, "latest", lambda s, cid: old)
     a._check_youtube()
     assert posted == []
-    new = [youtube.Video("bbbbbbbbbbb", "MARKET CRASH! Sell these now", "GutFoxx")] + old
+    new = [youtube.Video("ccccccccccc", "Top 5 Plays of the Week", "GutFoxx"),
+           youtube.Video("bbbbbbbbbbb", "MARKET CRASH! Sell these now", "GutFoxx"),
+           youtube.Video("ddddddddddd", "UNSTOPPABLE PROMO LEAKED! Full Content Schedule", "GutFoxx")] + old
     monkeypatch.setattr(youtube, "latest", lambda s, cid: new)
     a._check_youtube(); a._check_youtube()
-    assert posted == [("MARKET CRASH! Sell these now", True)] and a.videos[0].id == "bbbbbbbbbbb"
+    # gameplay video waits for the report; market + leak videos post right away, once
+    assert sorted(posted) == [("MARKET CRASH! Sell these now", "market"),
+                              ("UNSTOPPABLE PROMO LEAKED! Full Content Schedule", "leak")]
+    assert a.videos[-1].id in ("ccccccccccc", "aaaaaaaaaaa")      # unflagged sorted last
 
 
 def test_videos_tab_parser_on_real_page():
@@ -217,3 +222,28 @@ def test_videos_tab_parser_on_real_page():
         return
     vids = youtube.parse_videos_tab(open("/tmp/gfv.html", encoding="utf-8", errors="ignore").read())
     assert len(vids) >= 10 and vids[0].channel == "GutFoxx" and len(vids[0].id) == 11
+
+
+def test_video_classification_on_real_titles():
+    from app.youtube import classify
+    assert classify("REDUX AND WHAT TO DO THIS WEEK IN MUT 27!") == "market"
+    assert classify("UNSTOPPABLE PROMO LEAKED! New Collector Series + FULL Content Schedule") == "leak"
+    assert classify("DO THIS NOW BEFORE THE UNSTOPPABLE PROMO IN MADDEN 27!") == "leak"
+    assert classify("I Did THE MOST REWARDING MISSION in MUT 27! (2M Coins)") == "market"
+    assert classify("Ranking The BEST QBs in MUT 27!") is None
+    assert classify("The Wheel of MUT! Madden 27 Season Opener") is None
+
+
+def test_chatty_channel_leak_videos_are_rate_limited(tmp_path, monkeypatch):
+    from app import youtube
+    a = agent(tmp_path, monkeypatch)
+    a.cfg["youtube_channels"] = ["UCvD5D-RRf0bXWX-gV5FD3xA"]
+    posted = []
+    a.discord.video = lambda v, kind: posted.append(kind)
+    feed = [youtube.Video("a" * 11, "old video", "Moshi")]
+    monkeypatch.setattr(youtube, "latest", lambda s, cid: feed)
+    a._check_youtube()
+    feed[:0] = [youtube.Video(c * 11, f"UPDATES ON EVERYTHING! LEAKS #{c}", "Moshi") for c in "bcd"]
+    feed.insert(0, youtube.Video("e" * 11, "Best way to make coins today", "Moshi"))
+    a._check_youtube()
+    assert posted.count("leak") == 1 and posted.count("market") == 1

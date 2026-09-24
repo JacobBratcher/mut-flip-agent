@@ -35,7 +35,7 @@ DEFAULTS = {
         "report": True, "report_hour": 9, "alert_pct": 8,
         "news": True, "twitch_drops": True, "program_alert_pct": 15,
     },
-    "youtube_channels": ["@GutFoxx"],
+    "youtube_channels": ["@GutFoxx", "@iampopularstranger", "@MoshiMadden", "@SwiftMadden"],
     "tiers": {
         "watch_minutes": 2, "hot_minutes": 10, "cold_hours": 24,
         "hot_min_value": 25000, "hot_min_daily_sales": 5,

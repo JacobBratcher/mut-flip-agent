@@ -16,9 +16,9 @@ def _pct(x):
     return "n/a" if x is None else f"{x * 100:+.1f}%"
 
 
-def _is_market(title):
-    from .youtube import is_market_video
-    return is_market_video(title)
+def _icon(title):
+    from .youtube import ICON, classify
+    return ICON[classify(title)]
 
 
 def verdict(change, threshold):
@@ -206,8 +206,8 @@ class Discord:
             {"name": "New on mut.gg", "value": promo_text[:1024]},
         ]
         if videos:
-            fields.append({"name": "From MUT YouTubers", "value": "\n".join(
-                f"{'💰 ' if _is_market(v.title) else ''}[{v.channel}: {v.title}]({v.url})"
+            fields.append({"name": "From MUT YouTubers (💰 market · 🔮 leaks)", "value": "\n".join(
+                f"{_icon(v.title)} [{v.channel}: {v.title}]({v.url})"
                 for v in videos)[:1024]})
         fields += [
             {"name": "Twitch drops", "value": drops or "None live"},
@@ -235,11 +235,13 @@ class Discord:
             "footer": {"text": f"{platform.upper()} • program alert"},
         }], content="@here")
 
-    def video(self, v, market_related):
+    def video(self, v, kind):
+        from .youtube import ICON
         self.send([{
-            "title": f"{'💰' if market_related else '📺'} {v.channel}: {v.title}",
+            "title": f"{ICON.get(kind, '📺')} {v.channel}: {v.title}",
             "url": v.url,
             "color": 0xFF0000,
-            "description": ("Market/coins video. Worth a watch." if market_related else None),
+            "description": {"market": "Market / coins video.",
+                            "leak": "Leaks or upcoming content: this is what moves prices next."}.get(kind),
             "footer": {"text": "new upload"},
         }])

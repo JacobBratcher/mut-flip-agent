@@ -60,6 +60,9 @@ options:
     program_alert_pct: 15
   youtube_channels:
     - "@GutFoxx"
+    - "@iampopularstranger"
+    - "@MoshiMadden"
+    - "@SwiftMadden"
   tiers:
     watch_minutes: 2
     hot_minutes: 10

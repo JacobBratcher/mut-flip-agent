@@ -7,7 +7,7 @@ It also keeps you on top of the market as a whole:
 - **Program alerts** when one program (Legends, Team of the Week, Team Builders…) moves `market.program_alert_pct` (15%), even if the overall market doesn't.
 - **📊 Daily report** at `market.report_hour` (default 9 AM): market change over 24h and 7d, biggest drops and gains, new mut.gg promos, live Twitch drops, and yesterday's snipes.
 - **🆕 New promos** posted as mut.gg publishes them (checked every 30 min).
-- **📺 MUT YouTubers:** new uploads from `youtube_channels` (default [GutFoxx](https://www.youtube.com/@GutFoxx); add any `@handle`), with market/coin videos marked 💰.
+- **📺 MUT YouTubers:** follows `youtube_channels`, by default [GutFoxx](https://www.youtube.com/@GutFoxx) (market strategy), [Popular Stranger](https://www.youtube.com/@iampopularstranger) (leaks and content schedules), [Moshi](https://www.youtube.com/@MoshiMadden) (daily updates and leaks) and [Swift](https://www.youtube.com/@SwiftMadden) (state of MUT, coin missions). Add any `@handle`. 💰 market/coin videos post instantly; 🔮 leak/upcoming-content videos post at most once per 8h per channel; everything else waits for the daily report.
 - **What to do today** in the daily report: promo-day dip and next-day bounce, midweek buying / weekend selling, and the big seasonal crashes (Road to the Playoffs, Team of the Year + Super Bowl, NFL Draft), based on [GutFoxx's market guides](https://gutfoxx.com/tag/madden-market/) and the mut.gg community.
 - **🎁 Twitch drop reminders** (`@here`) when a Madden drop campaign goes live, from [twitchdrops.app](https://twitchdrops.app/game/madden-nfl-27) (checked every 3 h).
 
