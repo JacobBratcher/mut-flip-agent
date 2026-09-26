@@ -4,7 +4,20 @@ const FEEDER_URL = "https://www.mut.gg/price-tracker/";
 const BLOCK_CODES = new Set([0, 403, 429, 503]);
 let running = false;
 
+const STALL_MS = 5 * 60 * 1000;   // no progress this long = wedged, reload the extension
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let beat = Date.now();             // last time the loop made progress
+const alive = () => { beat = Date.now(); };
+
+// Nothing may wait forever: a hung promise used to freeze the feeder until someone restarted it.
+function withTimeout(p, ms, what) {
+  let t;
+  return Promise.race([
+    p,
+    new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${what} timed out`)), ms); }),
+  ]).finally(() => clearTimeout(t));
+}
+const tabMsg = (tabId, msg, ms) => withTimeout(chrome.tabs.sendMessage(tabId, msg), ms, msg.type);
 const get = (keys) => chrome.storage.local.get(keys);
 const set = (obj) => chrome.storage.local.set(obj);
 
@@ -29,6 +42,7 @@ async function agent(method, path, body) {
     method,
     headers: { "Content-Type": "application/json", "X-Feeder-Token": token || "" },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(15000),
   });
   if (!r.ok) throw new Error(`agent ${path} -> ${r.status}`);
   return r.json();
@@ -42,30 +56,40 @@ function feederTab() {
   return next;
 }
 
+const MUT_TABS = ["https://www.mut.gg/*", "https://mut.gg/*"];
+const isMut = (u) => /^https:\/\/(www\.)?mut\.gg\//.test(u || "");
+
+async function waitForPing(tabId) {
+  for (let i = 0; i < 30; i++) {
+    await sleep(1000);
+    try { await tabMsg(tabId, { type: "mutfeeder:ping" }, 3000); return true; } catch (_) { /* loading */ }
+  }
+  return false;
+}
+
 async function findOrOpenTab() {
   let { tabId } = await get(["tabId"]);
-  if (!tabId) {
-    const open = await chrome.tabs.query({ url: "https://www.mut.gg/*" });
-    if (open.length) { tabId = open[0].id; await chrome.tabs.update(tabId, { pinned: true }); await set({ tabId }); }
-  }
+  const open = await chrome.tabs.query({ url: MUT_TABS });
+  if (!open.some((t) => t.id === tabId)) tabId = open.length ? open[0].id : null;
+  // Keep exactly one feeder tab (stalls used to leave a new pinned tab behind each time).
+  const extra = open.filter((t) => t.id !== tabId).map((t) => t.id);
+  if (extra.length) await chrome.tabs.remove(extra).catch(() => {});
   if (tabId) {
     try {
       const t = await chrome.tabs.get(tabId);
-      if (t.url && t.url.startsWith("https://www.mut.gg/")) {
-        await chrome.tabs.sendMessage(tabId, { type: "mutfeeder:ping" });
-        return tabId;
+      if (isMut(t.url)) {
+        await set({ tabId });
+        try { await tabMsg(tabId, { type: "mutfeeder:ping" }, 3000); return tabId; } catch (_) { }
+        // Tab exists but its page stopped answering: reload it in place.
+        await chrome.tabs.update(tabId, { url: FEEDER_URL, pinned: true });
+        if (await waitForPing(tabId)) return tabId;
+        await chrome.tabs.remove(tabId).catch(() => {});
       }
-    } catch (_) { /* tab gone or not ready */ }
+    } catch (_) { /* tab gone */ }
   }
   const t = await chrome.tabs.create({ url: FEEDER_URL, pinned: true, active: false });
   await set({ tabId: t.id });
-  for (let i = 0; i < 30; i++) {
-    await sleep(1000);
-    try {
-      await chrome.tabs.sendMessage(t.id, { type: "mutfeeder:ping" });
-      return t.id;
-    } catch (_) { /* still loading */ }
-  }
+  if (await waitForPing(t.id)) return t.id;
   throw new Error("mut.gg tab did not load");
 }
 
@@ -81,6 +105,7 @@ async function bump(field, n = 1) {
 async function loop() {
   if (running) return;
   running = true;
+  alive();
   let backoff = 0;
   try {
     await bootstrap();
@@ -90,22 +115,40 @@ async function loop() {
     let cfgAt = Date.now();
     while ((await get(["enabled"])).enabled) {
       if (Date.now() - cfgAt > 600000) { cfg = await agent("GET", "/config"); cfgAt = Date.now(); }
+      alive();
       const { items } = await agent("GET", "/queue?n=5");
       if (!items.length) { await set({ state: "idle (nothing due)" }); await sleep(3000); continue; }
-      const tab = await feederTab();
+      const tab = await withTimeout(feederTab(), 90000, "opening the mut.gg tab");
       for (const it of items) {
-        const res = await chrome.tabs.sendMessage(tab, { type: "mutfeeder:fetch", uid: it.uid, platform: cfg.platform });
+        let res;
+        try {
+          res = await tabMsg(tab, { type: "mutfeeder:fetch", uid: it.uid, platform: cfg.platform }, 60000);
+        } catch (e) {
+          // The page stopped answering: reload it now, and let the alarm restart the loop.
+          await chrome.tabs.reload(tab).catch(() => {});
+          throw e;
+        }
+        alive();
         if (res && res.status === 200 && res.data) {
           await agent("POST", "/ingest", { uid: it.uid, data: res.data });
           await bump("checks");
           await set({ state: "running" });
           backoff = 0;
+        } else if (res && res.status === -1) {
+          // mut.gg didn't answer in time: refresh the page and carry on shortly.
+          await bump("errors");
+          await set({ state: "mut.gg timed out, retrying" });
+          await chrome.tabs.reload(tab).catch(() => {});
+          await sleep(5000);
+          break;
         } else if (res && BLOCK_CODES.has(res.status)) {
           backoff = Math.min(900000, Math.max(60000, backoff * 2));
           await bump("errors");
           await set({ state: `mut.gg refused (${res.status}), pausing ${backoff / 1000}s` });
           await agent("POST", "/status", { state: "blocked", detail: `${res.status} ${res.detail || ""}` }).catch(() => {});
+          beat = Date.now() + backoff;   // a deliberate pause is not a stall
           await sleep(backoff);
+          alive();
           await agent("POST", "/status", { state: "ok" }).catch(() => {});
           break;
         }
@@ -123,7 +166,16 @@ async function loop() {
 
 // The service worker can be suspended; this alarm restarts the loop if so.
 chrome.alarms.create("mutfeeder", { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener(() => loop());
+// If the loop has made no progress for STALL_MS it is stuck on something we can't cancel,
+// so reload the whole extension (a fresh service worker and a clean start).
+chrome.alarms.onAlarm.addListener(async () => {
+  if (running && Date.now() - beat > STALL_MS) {
+    await set({ state: "stalled, restarting" }).catch(() => {});
+    chrome.runtime.reload();
+    return;
+  }
+  loop();
+});
 chrome.runtime.onStartup.addListener(() => loop());
 chrome.runtime.onInstalled.addListener(() => loop());
 chrome.runtime.onMessage.addListener((msg, _s, reply) => {

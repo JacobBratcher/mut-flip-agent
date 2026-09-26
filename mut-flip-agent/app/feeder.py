@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -62,6 +63,13 @@ def serve(agent, port):
                 with agent.lock:
                     rows = agent.db.lease_due(n, LEASE_SECONDS)
                 return self._send(200, {"items": [{"uid": r["uid"], "url": r["url"]} for r in rows]})
+            if u.path == "/health":
+                # Used by the desktop keeper's watchdog: seconds since prices last arrived
+                # (counted from agent start if none yet), so it can restart a stalled browser.
+                with agent.lock:
+                    since = max(agent.last_ingest, getattr(agent, "started", 0))
+                    state = agent.feeder_state
+                return self._send(200, {"ingest_age": int(time.time() - since), "state": state})
             self._send(404, {"error": "not found"})
 
         def do_POST(self):

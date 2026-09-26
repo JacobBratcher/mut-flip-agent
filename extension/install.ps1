@@ -152,6 +152,17 @@ $showFlag = Join-Path $here 'show.flag'
 $hiddenList = Join-Path $here 'hidden.txt'
 Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $here 'win.cs')))
 Remove-Item $showFlag -ErrorAction SilentlyContinue
+$log = Join-Path $here 'watchdog.log'
+function Write-Log($msg) {
+    "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $msg" | Add-Content $log
+    if ((Get-Item $log).Length -gt 200KB) { Get-Content $log -Tail 200 | Set-Content $log }
+}
+# Watchdog: if the agent says no prices have arrived for 10 minutes (and mut.gg isn't
+# blocking us), the browser is stuck, so close it and let the loop below start a fresh one.
+$cfg = $null
+try { $cfg = [IO.File]::ReadAllText((Join-Path $here 'extension\config.json')) | ConvertFrom-Json } catch { }
+$STALE = 600; $GRACE = 600
+$launched = Get-Date; $lastRestart = [datetime]::MinValue; $nextHealth = (Get-Date).AddSeconds(60)
 $pids = @(); $nextScan = 0
 while ($true) {
     if ((Get-Date).Ticks -ge $nextScan) {
@@ -159,11 +170,28 @@ while ($true) {
             Where-Object { $_.CommandLine -like '*MUTFlipFeeder*' } | ForEach-Object { [uint32]$_.ProcessId })
         if (-not $pids.Count) {
             Start-Process -FilePath $chrome -ArgumentList $flags -WindowStyle Minimized
+            $launched = Get-Date
             Start-Sleep -Seconds 3
             $nextScan = 0
             continue
         }
         $nextScan = (Get-Date).AddSeconds(15).Ticks
+    }
+    if ($cfg -and (Get-Date) -ge $nextHealth) {
+        $nextHealth = (Get-Date).AddSeconds(60)
+        try {
+            $h = Invoke-RestMethod "$($cfg.agentUrl)/health" -Headers @{ 'X-Feeder-Token' = $cfg.token } -TimeoutSec 10
+            $up = ((Get-Date) - $launched).TotalSeconds
+            $since = ((Get-Date) - $lastRestart).TotalSeconds
+            if ($h.ingest_age -gt $STALE -and $h.state -ne 'blocked' -and $up -gt $GRACE -and $since -gt 900) {
+                Write-Log "No prices for $($h.ingest_age)s; restarting the feeder browser."
+                foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }
+                $lastRestart = Get-Date
+                $nextScan = 0
+                Start-Sleep -Seconds 3
+                continue
+            }
+        } catch { }   # agent unreachable (HA restarting etc.): restarting the browser won't help
     }
     if (-not (Test-Path $showFlag)) {
         $h = [FeederWin]::Hide([uint32[]]$pids)

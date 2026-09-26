@@ -37,6 +37,7 @@ class Agent:
         self.last_price_ts = None
         self.checks_day, self.checks_today = datetime.now().date(), 0
         self.last_ingest = 0
+        self.started = time.time()
         self.feeder_state = ""
         self.lock = threading.RLock()
         self.web = requests.Session()

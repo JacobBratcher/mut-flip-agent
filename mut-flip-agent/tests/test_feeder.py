@@ -55,5 +55,8 @@ def test_feeder_flow(tmp_path, monkeypatch):
         call(port, "POST", "/ingest", {"uid": "27-1", "data": payload})   # same listing: no repeat
         assert len(agent.discord.listings) == 1
         assert call(port, "POST", "/ingest", {"uid": "27-999", "data": payload})[1]["ok"] is False
+        code, h = call(port, "GET", "/health")
+        assert code == 200 and h["ingest_age"] < 5 and h["state"] == "ok"
+        assert call(port, "GET", "/health", token="nope")[0] == 401
     finally:
         httpd.shutdown()

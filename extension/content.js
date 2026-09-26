@@ -6,7 +6,8 @@ async function fetchPrices(uid, platform) {
   const path = `/api/mutdb/prices/${uid}/${platform}/`;
   let last = null;
   for (let i = 0; i <= UPDATE_WAITS.length; i++) {
-    const r = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json" } });
+    const r = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json" },
+                                  signal: AbortSignal.timeout(20000) });
     const type = r.headers.get("content-type") || "";
     if (!r.ok || !type.includes("json")) {
       return { status: r.status || 0, detail: (await r.text()).slice(0, 120) };
@@ -23,7 +24,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (msg && msg.type === "mutfeeder:fetch") {
     fetchPrices(msg.uid, msg.platform)
       .then(reply)
-      .catch((e) => reply({ status: 0, detail: String(e).slice(0, 120) }));
+      // A timeout is a slow/hung request, not mut.gg refusing us: report it separately.
+      .catch((e) => reply({ status: e && e.name === "TimeoutError" ? -1 : 0, detail: String(e).slice(0, 120) }));
     return true; // async reply
   }
   if (msg && msg.type === "mutfeeder:ping") {
