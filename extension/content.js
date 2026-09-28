@@ -1,6 +1,7 @@
 // Runs on mut.gg pages. Fetches a card's prices exactly like mut.gg's own page does
 // (same URL, same origin, your normal session), including its "still updating" re-checks.
-const UPDATE_WAITS = [2000, 5000, 10000];
+// mut.gg refreshes a card from EA about 1 s after it's asked (data older than ~60 s).
+const UPDATE_WAITS = [1500, 2000, 4000];
 
 async function fetchPrices(uid, platform) {
   const path = `/api/mutdb/prices/${uid}/${platform}/`;

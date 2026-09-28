@@ -102,6 +102,35 @@ async function bump(field, n = 1) {
   await set({ stats });
 }
 
+// Cards are started on a steady clock (one every cfg.interval_ms) with a few in flight at
+// once, so a slow mut.gg refresh on one card doesn't hold up the rest.
+const MAX_INFLIGHT = 4;
+let nextSlot = 0;
+async function slot(ms) {
+  const now = Date.now();
+  const at = Math.max(now, nextSlot);
+  nextSlot = at + ms;
+  if (at > now) await sleep(at - now);
+}
+
+async function checkOne(tab, it, cfg) {
+  let res;
+  try {
+    res = await tabMsg(tab, { type: "mutfeeder:fetch", uid: it.uid, platform: cfg.platform }, 60000);
+  } catch (e) {
+    return { kind: "hang", error: e };
+  }
+  alive();
+  if (res && res.status === 200 && res.data) {
+    await agent("POST", "/ingest", { uid: it.uid, data: res.data });
+    await bump("checks");
+    return { kind: "ok" };
+  }
+  if (res && res.status === -1) return { kind: "timeout" };
+  if (res && BLOCK_CODES.has(res.status)) return { kind: "blocked", res };
+  return { kind: "other" };
+}
+
 async function loop() {
   if (running) return;
   running = true;
@@ -116,44 +145,47 @@ async function loop() {
     while ((await get(["enabled"])).enabled) {
       if (Date.now() - cfgAt > 600000) { cfg = await agent("GET", "/config"); cfgAt = Date.now(); }
       alive();
-      const { items } = await agent("GET", "/queue?n=5");
+      const { items } = await agent("GET", `/queue?n=${MAX_INFLIGHT * 2}`);
       if (!items.length) { await set({ state: "idle (nothing due)" }); await sleep(3000); continue; }
       const tab = await withTimeout(feederTab(), 90000, "opening the mut.gg tab");
-      for (const it of items) {
-        let res;
-        try {
-          res = await tabMsg(tab, { type: "mutfeeder:fetch", uid: it.uid, platform: cfg.platform }, 60000);
-        } catch (e) {
-          // The page stopped answering: reload it now, and let the alarm restart the loop.
-          await chrome.tabs.reload(tab).catch(() => {});
-          throw e;
+
+      let stop = null;
+      const queue = items.slice();
+      const worker = async () => {
+        while (queue.length && !stop) {
+          const it = queue.shift();
+          await slot(cfg.interval_ms);
+          if (stop) return;
+          const r = await checkOne(tab, it, cfg);
+          if (r.kind !== "ok" && r.kind !== "other" && !stop) stop = r;
         }
-        alive();
-        if (res && res.status === 200 && res.data) {
-          await agent("POST", "/ingest", { uid: it.uid, data: res.data });
-          await bump("checks");
-          await set({ state: "running" });
-          backoff = 0;
-        } else if (res && res.status === -1) {
-          // mut.gg didn't answer in time: refresh the page and carry on shortly.
-          await bump("errors");
-          await set({ state: "mut.gg timed out, retrying" });
-          await chrome.tabs.reload(tab).catch(() => {});
-          await sleep(5000);
-          break;
-        } else if (res && BLOCK_CODES.has(res.status)) {
-          backoff = Math.min(900000, Math.max(60000, backoff * 2));
-          await bump("errors");
-          await set({ state: `mut.gg refused (${res.status}), pausing ${backoff / 1000}s` });
-          await agent("POST", "/status", { state: "blocked", detail: `${res.status} ${res.detail || ""}` }).catch(() => {});
-          beat = Date.now() + backoff;   // a deliberate pause is not a stall
-          await sleep(backoff);
-          alive();
-          await agent("POST", "/status", { state: "ok" }).catch(() => {});
-          break;
-        }
-        await sleep(cfg.interval_ms);
+      };
+      await Promise.all(Array.from({ length: Math.min(MAX_INFLIGHT, items.length) }, worker));
+
+      if (!stop) { await set({ state: "running" }); backoff = 0; continue; }
+      if (stop.kind === "hang") {
+        // The page stopped answering: reload it now, and let the alarm restart the loop.
+        await chrome.tabs.reload(tab).catch(() => {});
+        throw stop.error;
       }
+      if (stop.kind === "timeout") {
+        // mut.gg didn't answer in time: refresh the page and carry on shortly.
+        await bump("errors");
+        await set({ state: "mut.gg timed out, retrying" });
+        await chrome.tabs.reload(tab).catch(() => {});
+        await sleep(5000);
+        continue;
+      }
+      // blocked
+      const res = stop.res;
+      backoff = Math.min(900000, Math.max(60000, backoff * 2));
+      await bump("errors");
+      await set({ state: `mut.gg refused (${res.status}), pausing ${backoff / 1000}s` });
+      await agent("POST", "/status", { state: "blocked", detail: `${res.status} ${res.detail || ""}` }).catch(() => {});
+      beat = Date.now() + backoff;   // a deliberate pause is not a stall
+      await sleep(backoff);
+      alive();
+      await agent("POST", "/status", { state: "ok" }).catch(() => {});
     }
     await set({ state: "stopped" });
   } catch (e) {
