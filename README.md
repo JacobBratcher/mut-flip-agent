@@ -46,24 +46,30 @@ Runs 24/7 as a Home Assistant add-on or a plain Docker container. Data access is
 | Tier | Which cards | Default interval |
 |---|---|---|
 | watch | Your `watchlist` | 2 min |
-| new release | Cards that just came out: first 48 h (`fresh_hours`), or 7 days for LTD / Champions (`fresh_long_hours`) | 3 min |
+| new release | Cards that just came out: first 48 h (`fresh_hours`). `fresh_long_hours` (7 days) applies to cards whose name contains a word in `fresh_long_names` (LTD, Limited, Champion), but mut.gg card names usually don't include the program, so in practice most new cards get `fresh_hours` | 3 min |
 | hot | Worth ≥ 25k and ≥ 5 sales/day | 10 min |
 | cold | Everything else | 24 h |
 
 Cards at `min_ovr` (default 85) and up are discovered from mut.gg's player list (about 300 cards at 85+) every 6 hours, and every 30 minutes for 3 hours after a promo is announced, because mistake listings way under value are most common right after a drop. New cards get a 🆕 Discord message and go straight into the new-release lane. With a huge drop, each new card is checked a little less often (they get up to 60% of the budget) so the rest of the market isn't starved. Set `min_ovr: 0` to track everything.
 
-**Poll budget (default 20 requests/min):** about 24,000 requests/day after 15% headroom. With ~420 cards at 83+, every card gets checked at least daily, and the top 168 by coins traded per day get checked every 10 minutes. Weaker hot cards drop to cold automatically. The agent honors `Retry-After` and backs off on refusals.
+**Poll budget (`requests_per_minute`, default 20):** the agent keeps 15% headroom, so 20/min is about 24,500 checks/day. The budget is shared in this order: watchlist, then new releases (capped at 60% of what's left), then cold cards (each once per `cold_hours`), and whatever remains decides how many cards fit in the hot tier (`hot cap`, logged every hour as `Poll plan`). If more cards qualify as hot than fit, the lowest-value ones drop to cold. To treat every card the same, set `hot_min_value: 0` and `hot_min_daily_sales: 0` so every card with recent sales qualifies.
+
+**mut.gg rate limit:** mut.gg's Cloudflare rate-limits each IP (error 1015, HTTP 429). In testing it held at ~16–20 cards/min (about 30–40 requests/min, since a stale card takes a second request after mut.gg refreshes it) and started returning 429s at ~60 cards/min. Keep `requests_per_minute` at 20 or below. The agent honors `Retry-After` and backs off on refusals.
 
 ## How it gets prices
 
 **Default: `fetch_mode: extension`.** mut.gg only serves price data to real browsers, so prices come from your own Chrome:
 
-1. The **MUT Flip Feeder** extension (in `extension/`) keeps one pinned mut.gg tab open.
-2. It asks the agent which cards are due (watchlist every 2 min, hot cards every 10 min, the rest daily).
-3. That tab requests each card's prices exactly like mut.gg's own page does, including its "still updating" re-checks, at `requests_per_minute` (default 20).
-4. Each result goes straight to the agent. A **live Buy Now listing** under your max-buy price triggers a Discord alert (with `@here`) within about a second.
+1. The **MUT Flip Feeder** extension (in `extension/`, v1.2.0) keeps exactly one pinned mut.gg tab open (`mut.gg` or `www.mut.gg`) and closes any extras.
+2. It asks the agent which cards are due (`GET /queue`), following the tiers above.
+3. That tab requests each card's prices exactly like mut.gg's own page does (`/api/mutdb/prices/<id>/pc/`). If mut.gg's copy is older than ~60 s it refreshes from EA in about a second and reports `updating`; the feeder re-checks after 1.5 s. Up to 4 cards are in flight at once, started one every `60 / requests_per_minute` seconds, so a slow card doesn't hold up the rest.
+4. Each result goes straight to the agent (`POST /ingest`). A **live Buy Now listing** under your max-buy price triggers a Discord alert (with `@here`) within about a second.
 
-If mut.gg refuses in your browser, the feeder pauses (backing off up to 15 min) and the agent shows **blocked**. Prices only flow while Chrome is running on that PC. The other mode, `direct`, uses plain HTTP from the server; mut.gg blocks it.
+**Self-recovery:** every request has a timeout (agent 15 s, mut.gg 20 s, tab messages 60 s). A mut.gg timeout reloads the tab and retries after 5 s without reporting a block. If the loop makes no progress for 5 minutes, the extension reloads itself. On the desktop, the keeper script also asks the agent's `GET /health` every minute and restarts the feeder browser if no prices have arrived for 10 minutes (not while mut.gg is blocking, and at most every 15 min); it logs to `%LOCALAPPDATA%\MUTFlipFeeder\watchdog.log`.
+
+If mut.gg refuses in your browser (403/429), the feeder pauses (backing off from 1 up to 15 min) and the agent shows **blocked**. Note that a request that gets **no response at all** (your internet or DNS is down) is currently also reported as a refusal, with status 0, so a "mut.gg is refusing requests" message with `0` in it usually means a network outage. Prices only flow while the feeder PC is on and signed in. The other mode, `direct`, uses plain HTTP from the server; mut.gg blocks it.
+
+**Feeder API** (port 8099, every call needs the `X-Feeder-Token` header): `GET /config`, `GET /queue?n=`, `POST /ingest`, `POST /status`, `GET /health` (seconds since the last price, and the feeder state).
 
 ### Install the feeder on Windows (one line)
 
@@ -80,11 +86,30 @@ It asks for the agent URL (`http://<HA IP>:8099`) and the add-on's `feeder_token
 
 It's a normal Chromium window, just hidden: headless Chrome identifies itself as HeadlessChrome and mut.gg blocks it. Double-click **MUT Flip Feeder** on the desktop to show the window, and again to hide it.
 
+Files live in `%LOCALAPPDATA%\MUTFlipFeeder`: `extension\` (with `config.json` holding the agent URL and token), `profile\` (the Chromium profile), `feeder.ps1` / `feeder.vbs` (the keeper, started from the Startup folder), `toggle.ps1` / `toggle.vbs` (show/hide), and `watchdog.log`. The keeper uses VBScript (`wscript`) to start PowerShell with no window.
+
 Re-run it any time to update (it remembers the URL and token). Over RDP, **disconnect** when you leave, don't sign out.
 
 Manual install instead: `chrome://extensions` → Developer mode → **Load unpacked** → `extension/` → Settings → enter the URL and token → Start.
 
 **Tip:** in Discord, set the alert channel's notifications to *All Messages* so alerts buzz your phone instantly.
+
+## Current live setup (Oct 2, 2026)
+
+What the author's instance actually runs, set in the add-on's Configuration tab (code defaults are described above):
+
+| Setting | Live value | Default |
+|---|---|---|
+| Add-on / feeder | 1.8.1 / extension 1.2.0 | |
+| `requests_per_minute` | 16 | 20 |
+| `min_ovr` | 86 (~238 cards) | 85 |
+| `tiers.hot_min_value` / `hot_min_daily_sales` | 0 / 0 (no hot filter: every card with sales qualifies) | 25,000 / 5 |
+| `tiers.hot_minutes` | 20 | 10 |
+| `tiers.cold_hours` | 1 | 24 |
+| `tiers.fresh_minutes` | 2 | 3 |
+| `tiers.fresh_hours` / `fresh_long_hours` | 168 / 336 | 48 / 168 |
+
+With these, new releases get up to 60% of checks for their first week, and every other card is checked every 20 minutes when the budget allows (hourly otherwise). Home Assistant also has an automation that notifies the phone (and Discord, once its `rest_command` is added to `configuration.yaml`) when `sensor.mut_flip_agent_status` is `waiting for feeder` / `blocked` for 15 minutes, and a dashboard badge on the MUT Market button that counts snipes since it was last tapped (`input_datetime.mut_market_last_seen`, `script.mut_market_mark_seen`). Those live in Home Assistant, not in this repo.
 
 ## Home Assistant sensors
 
@@ -108,7 +133,7 @@ docker compose up -d --build
 
 ## If mut.gg blocks requests
 
-It never tries to bypass Cloudflare. It pauses (backing off up to 1h), keeps retrying, and posts a Discord warning at most every 6h. If that keeps happening, confirm your token/header, or ask mut.gg to allowlist your server's IP.
+It never tries to bypass Cloudflare or rate limits (no proxies or IP rotation). The feeder pauses (backing off up to 15 min) and retries, and Discord gets a warning when the state changes to blocked. If it keeps happening, lower `requests_per_minute`, or ask mut.gg for a higher limit for your IP.
 
 ## Debugging
 
