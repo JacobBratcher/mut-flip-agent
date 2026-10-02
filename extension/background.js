@@ -93,41 +93,63 @@ async function findOrOpenTab() {
   throw new Error("mut.gg tab did not load");
 }
 
-async function bump(field, n = 1) {
-  const { stats = {} } = await get(["stats"]);
-  const today = new Date().toDateString();
-  if (stats.day !== today) Object.assign(stats, { day: today, checks: 0, errors: 0 });
-  stats[field] = (stats[field] || 0) + n;
-  stats.last = Date.now();
-  await set({ stats });
+let statsLock = Promise.resolve();
+function bump(field, n = 1) {
+  const update = statsLock.then(async () => {
+    const { stats = {} } = await get(["stats"]);
+    const today = new Date().toDateString();
+    if (stats.day !== today) Object.assign(stats, { day: today, checks: 0, errors: 0, requests: 0 });
+    stats[field] = (stats[field] || 0) + n;
+    stats.last = Date.now();
+    await set({ stats });
+  });
+  statsLock = update.catch(() => {});
+  return update;
 }
 
-// Cards are started on a steady clock (one every cfg.interval_ms) with a few in flight at
-// once, so a slow mut.gg refresh on one card doesn't hold up the rest.
+// A few cards can refresh concurrently; every HTTP attempt uses the agent's shared gate.
 const MAX_INFLIGHT = 4;
-let nextSlot = 0;
-async function slot(ms) {
-  const now = Date.now();
-  const at = Math.max(now, nextSlot);
-  nextSlot = at + ms;
-  if (at > now) await sleep(at - now);
-}
+const UPDATE_WAITS = [1500, 2000, 4000];
 
 async function checkOne(tab, it, cfg) {
   let res;
-  try {
-    res = await tabMsg(tab, { type: "mutfeeder:fetch", uid: it.uid, platform: cfg.platform }, 60000);
-  } catch (e) {
-    return { kind: "hang", error: e };
+  // Bound each refresh so it finishes within the server's five-minute card lease.
+  const deadline = Date.now() + 85000;
+  for (let attempt = 0; attempt <= UPDATE_WAITS.length; attempt++) {
+    while (true) {
+      if (!(await get(["enabled"])).enabled || Date.now() >= deadline) return { kind: "pending" };
+      const permit = await agent("POST", "/request-permit", {});
+      alive();
+      await set({ requestRate: permit.rpm });
+      if (permit.blocked) return { kind: "blocked", res: { status: 429, detail: "shared cooldown" },
+                                   wait_ms: permit.wait_ms };
+      if (permit.allowed) break;
+      await sleep(Math.min(10000, Math.max(1, permit.wait_ms)));
+    }
+    try {
+      res = await tabMsg(tab, { type: "mutfeeder:fetch", uid: it.uid, platform: cfg.platform }, 25000);
+    } catch (e) {
+      return { kind: "hang", error: e };
+    }
+    alive();
+    await bump("requests");
+    const feedback = await agent("POST", "/request-result", {
+      status: Math.max(0, res?.status || 0), retry_after: res?.retry_after,
+    });
+    if (res && BLOCK_CODES.has(res.status)) return { kind: "blocked", res,
+      wait_ms: Math.max(60000, feedback.wait_ms) };
+    if (!res || res.status !== 200 || !res.data?.updating) break;
+    // Never ingest an unfinished refresh as a successful fresh check.
+    if (attempt === UPDATE_WAITS.length) return { kind: "pending" };
+    await sleep(UPDATE_WAITS[attempt]);
   }
-  alive();
   if (res && res.status === 200 && res.data) {
-    await agent("POST", "/ingest", { uid: it.uid, data: res.data });
-    await bump("checks");
+    const accepted = await agent("POST", "/ingest", { uid: it.uid, data: res.data });
+    if (accepted.ok) await bump("checks");
+    await set({ state: "running" });
     return { kind: "ok" };
   }
   if (res && res.status === -1) return { kind: "timeout" };
-  if (res && BLOCK_CODES.has(res.status)) return { kind: "blocked", res };
   return { kind: "other" };
 }
 
@@ -135,34 +157,39 @@ async function loop() {
   if (running) return;
   running = true;
   alive();
-  let backoff = 0;
   try {
     await bootstrap();
     const { agentUrl, token } = await get(["agentUrl", "token"]);
     if (!agentUrl || !token) { await set({ state: "not configured" }); return; }
     let cfg = await agent("GET", "/config");
+    if (cfg.request_budget_version !== 1) throw new Error("Update MUT Flip Agent to 1.9.0 before running this feeder");
     let cfgAt = Date.now();
     while ((await get(["enabled"])).enabled) {
       if (Date.now() - cfgAt > 600000) { cfg = await agent("GET", "/config"); cfgAt = Date.now(); }
       alive();
-      const { items } = await agent("GET", `/queue?n=${MAX_INFLIGHT * 2}`);
-      if (!items.length) { await set({ state: "idle (nothing due)" }); await sleep(3000); continue; }
       const tab = await withTimeout(feederTab(), 90000, "opening the mut.gg tab");
 
       let stop = null;
-      const queue = items.slice();
+      let hadItems = false;
       const worker = async () => {
-        while (queue.length && !stop) {
-          const it = queue.shift();
-          await slot(cfg.interval_ms);
-          if (stop) return;
-          const r = await checkOne(tab, it, cfg);
-          if (r.kind !== "ok" && r.kind !== "other" && !stop) stop = r;
+        while (!stop && (await get(["enabled"])).enabled) {
+          // Lease just in time; a slow card no longer holds up a batch of fast cards.
+          const { items } = await agent("GET", "/queue?n=1");
+          if (!items.length || stop) return;
+          hadItems = true;
+          const r = await checkOne(tab, items[0], cfg);
+          if (!["ok", "other", "pending"].includes(r.kind) && !stop) stop = r;
         }
       };
-      await Promise.all(Array.from({ length: Math.min(MAX_INFLIGHT, items.length) }, worker));
+      // Settle every worker before another loop can start, including agent API errors.
+      const results = await Promise.allSettled(Array.from({ length: MAX_INFLIGHT }, async () => {
+        try { await worker(); } catch (error) { stop = stop || { kind: "error" }; throw error; }
+      }));
+      const failed = results.find((r) => r.status === "rejected");
+      if (failed) throw failed.reason;
+      if (!hadItems) { await set({ state: "idle (nothing due)" }); await sleep(3000); continue; }
 
-      if (!stop) { await set({ state: "running" }); backoff = 0; continue; }
+      if (!stop) { await set({ state: "running" }); continue; }
       if (stop.kind === "hang") {
         // The page stopped answering: reload it now, and let the alarm restart the loop.
         await chrome.tabs.reload(tab).catch(() => {});
@@ -178,12 +205,16 @@ async function loop() {
       }
       // blocked
       const res = stop.res;
-      backoff = Math.min(900000, Math.max(60000, backoff * 2));
+      const backoff = Math.max(60000, stop.wait_ms || 0);
       await bump("errors");
       await set({ state: `mut.gg refused (${res.status}), pausing ${backoff / 1000}s` });
       await agent("POST", "/status", { state: "blocked", detail: `${res.status} ${res.detail || ""}` }).catch(() => {});
       beat = Date.now() + backoff;   // a deliberate pause is not a stall
-      await sleep(backoff);
+      const resumeAt = Date.now() + backoff;
+      while (Date.now() < resumeAt && (await get(["enabled"])).enabled) {
+        await sleep(Math.min(30000, resumeAt - Date.now()));
+        alive();
+      }
       alive();
       await agent("POST", "/status", { state: "ok" }).catch(() => {});
     }

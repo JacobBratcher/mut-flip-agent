@@ -6,11 +6,12 @@ agent pauses with exponential backoff and alerts you on Discord.
 import html
 import logging
 import re
-import threading
 import time
 import xml.etree.ElementTree as ET
 
 import requests
+
+from .rate_limit import RequestBudget, retry_seconds
 
 log = logging.getLogger(__name__)
 BASE = "https://www.mut.gg"
@@ -27,12 +28,10 @@ class Blocked(Exception):
 
 
 class MutGG:
-    def __init__(self, cfg):
+    def __init__(self, cfg, budget=None):
         self.platform = cfg["platform"]
         self.game = str(cfg["game"])
-        self.min_gap = 60.0 / max(1, int(cfg["requests_per_minute"]))
-        self._last = 0.0
-        self._lock = threading.Lock()
+        self.budget = budget or RequestBudget(cfg.get("http_requests_per_minute", 40))
         self.mode = cfg.get("fetch_mode", "extension")
         self.s = requests.Session()
         self.s.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
@@ -44,30 +43,38 @@ class MutGG:
             self.s.headers[header] = token
 
     def _throttle(self):
-        with self._lock:
-            wait = self._last + self.min_gap - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)
-            self._last = time.monotonic()
+        while True:
+            permit = self.budget.acquire()
+            if permit["blocked"]:
+                raise Blocked("shared request cooldown", permit["wait_ms"] / 1000)
+            if permit["allowed"]:
+                return
+            time.sleep(permit["wait_ms"] / 1000)
 
-    def _get(self, url, **kw):
+    def _get(self, url, _raise_status=True, **kw):
         self._throttle()
-        r = self.s.get(url, timeout=30, **kw)
+        kw.setdefault("timeout", 30)
+        r = self.s.get(url, **kw)
         ctype = r.headers.get("content-type", "")
         if r.status_code in (403, 429, 503) or "Just a moment" in r.text[:600]:
-            try:
-                retry = int(r.headers.get("Retry-After", 0))
-            except ValueError:
-                retry = 0
+            retry = retry_seconds(r.headers.get("Retry-After"))
+            self.budget.record(r.status_code if r.status_code in (403, 429, 503) else 403, retry)
             raise Blocked(f"{r.status_code} from {url}", retry)
-        r.raise_for_status()
+        self.budget.record(r.status_code)
+        if _raise_status:
+            r.raise_for_status()
         return r, ctype
+
+    def get(self, url, **kw):
+        """Session-compatible entry point for MUT.GG news and article requests."""
+        return self._get(url, _raise_status=False, **kw)[0]
 
     # ---- prices -----------------------------------------------------------
     def prices(self, unique_id: str, card_url: str = "") -> dict:
         path = f"/api/mutdb/prices/{unique_id}/{self.platform}/"
         r, ctype = self._get(BASE + path)
         if "json" not in ctype:
+            self.budget.record(403)
             raise Blocked(f"non-JSON response for {unique_id}")
         return r.json().get("data") or {}
 

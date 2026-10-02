@@ -1,7 +1,9 @@
 async function render() {
-  const { enabled, state, stats = {} } = await chrome.storage.local.get(["enabled", "state", "stats"]);
+  const { enabled, state, stats = {}, requestRate } = await chrome.storage.local.get(["enabled", "state", "stats", "requestRate"]);
   document.getElementById("state").textContent = state || "–";
   document.getElementById("checks").textContent = (stats.checks || 0).toLocaleString();
+  document.getElementById("requests").textContent = (stats.requests || 0).toLocaleString();
+  document.getElementById("rate").textContent = requestRate == null ? "–" : requestRate.toFixed(1);
   document.getElementById("errors").textContent = stats.errors || 0;
   document.getElementById("last").textContent = stats.last ? `${Math.round((Date.now() - stats.last) / 1000)}s ago` : "–";
   document.getElementById("toggle").textContent = enabled ? "Stop" : "Start";

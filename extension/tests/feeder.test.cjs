@@ -1,0 +1,97 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+
+function background(responses, overrides = {}) {
+  let now = 1800000000000;
+  const calls = [], storage = { enabled: true, agentUrl: 'http://agent', token: 'secret' };
+  const noop = () => {};
+  const event = { addListener: noop };
+  const context = vm.createContext({
+    console, AbortSignal, Date: class extends Date { static now() { return now; } },
+    setTimeout: (callback, ms) => {
+      if (ms < 25000) { now += ms; queueMicrotask(callback); }
+      return 1;
+    },
+    clearTimeout: noop,
+    chrome: {
+      storage: { local: {
+        get: async () => structuredClone(storage),
+        set: async (patch) => Object.assign(storage, structuredClone(patch)),
+      } },
+      alarms: { create: noop, onAlarm: event },
+      runtime: { onStartup: event, onInstalled: event, onMessage: event },
+      tabs: { sendMessage: async () => { calls.push('mut.gg'); return responses.shift(); } },
+    },
+    fetch: async (url, options) => {
+      const endpoint = new URL(url).pathname;
+      const body = JSON.parse(options.body || '{}');
+      calls.push({ endpoint, body });
+      const defaults = {
+        '/request-permit': { allowed: true, blocked: false, wait_ms: 0, rpm: 32 },
+        '/request-result': { wait_ms: body.status === 429 ? 7200000 : 0 },
+        '/ingest': { ok: true },
+      };
+      const data = endpoint in overrides ? overrides[endpoint] : defaults[endpoint];
+      if (data instanceof Error) throw data;
+      return { ok: true, json: async () => data };
+    },
+  });
+  vm.runInContext(readFileSync(path.join(__dirname, '../background.js'), 'utf8'), context);
+  return { calls, storage, run: () => vm.runInContext("checkOne(1, {uid: '27-1'}, {platform: 'pc'})", context) };
+}
+
+test('every refresh retry obtains a permit and reports its result before ingest', async () => {
+  const fixture = background([{ status: 200, data: { updating: true } }, { status: 200, data: { pricesData: {} } }]);
+  assert.equal((await fixture.run()).kind, 'ok');
+  assert.deepEqual(fixture.calls.map(c => c.endpoint || c), [
+    '/request-permit', 'mut.gg', '/request-result', '/request-permit', 'mut.gg', '/request-result', '/ingest',
+  ]);
+  assert.equal(fixture.storage.stats.requests, 2);
+  assert.equal(fixture.storage.stats.checks, 1);
+});
+
+test('exhausted updating responses never count as fresh checks', async () => {
+  const fixture = background(Array.from({ length: 4 }, () => ({ status: 200, data: { updating: true } })));
+  assert.equal((await fixture.run()).kind, 'pending');
+  assert.equal(fixture.calls.filter(c => c === 'mut.gg').length, 4);
+  assert.equal(fixture.calls.some(c => c.endpoint === '/ingest'), false);
+  assert.equal(fixture.storage.stats.checks, 0);
+});
+
+test('429 forwards Retry-After and preserves a cooldown longer than 15 minutes', async () => {
+  const fixture = background([{ status: 429, retry_after: '7200' }]);
+  const result = await fixture.run();
+  assert.equal(result.kind, 'blocked');
+  assert.equal(result.wait_ms, 7200000);
+  assert.equal(fixture.calls.find(c => c.endpoint === '/request-result').body.retry_after, '7200');
+});
+
+test('shared cooldown prevents a browser request', async () => {
+  const fixture = background([], { '/request-permit': { allowed: false, blocked: true, wait_ms: 60000 } });
+  assert.equal((await fixture.run()).kind, 'blocked');
+  assert.equal(fixture.calls.includes('mut.gg'), false);
+});
+
+test('a broken permit service fails closed', async () => {
+  const fixture = background([], { '/request-permit': new Error('agent unavailable') });
+  await assert.rejects(fixture.run(), /agent unavailable/);
+  assert.equal(fixture.calls.includes('mut.gg'), false);
+});
+
+test('content script makes exactly one request even while prices are updating', async () => {
+  let requests = 0;
+  const context = vm.createContext({
+    AbortSignal,
+    chrome: { runtime: { onMessage: { addListener: () => {} } } },
+    fetch: async () => {
+      requests++;
+      return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ data: { updating: true } }) };
+    },
+  });
+  vm.runInContext(readFileSync(path.join(__dirname, '../content.js'), 'utf8'), context);
+  assert.equal((await vm.runInContext("fetchPrices('27-1', 'pc')", context)).data.updating, true);
+  assert.equal(requests, 1);
+});
