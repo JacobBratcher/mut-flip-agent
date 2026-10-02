@@ -1,24 +1,18 @@
 // Runs on mut.gg pages. Fetches a card's prices exactly like mut.gg's own page does
-// (same URL, same origin, your normal session), including its "still updating" re-checks.
-// mut.gg refreshes a card from EA about 1 s after it's asked (data older than ~60 s).
-const UPDATE_WAITS = [1500, 2000, 4000];
+// (same URL, same origin, your normal session). Exactly ONE HTTP request per message:
+// the background worker obtains a shared budget permit before every attempt/re-check.
 
 async function fetchPrices(uid, platform) {
   const path = `/api/mutdb/prices/${uid}/${platform}/`;
-  let last = null;
-  for (let i = 0; i <= UPDATE_WAITS.length; i++) {
-    const r = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json" },
-                                  signal: AbortSignal.timeout(20000) });
-    const type = r.headers.get("content-type") || "";
-    if (!r.ok || !type.includes("json")) {
-      return { status: r.status || 0, detail: (await r.text()).slice(0, 120) };
-    }
-    const body = await r.json();
-    last = body && body.data;
-    if (!last || !last.updating || i === UPDATE_WAITS.length) break;
-    await new Promise((res) => setTimeout(res, UPDATE_WAITS[i]));
+  const r = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json" },
+                                signal: AbortSignal.timeout(20000) });
+  const type = r.headers.get("content-type") || "";
+  if (!r.ok || !type.includes("json")) {
+    return { status: r.ok ? 403 : r.status, retry_after: r.headers.get("Retry-After"),
+             detail: (await r.text()).slice(0, 120) };
   }
-  return { status: 200, data: last };
+  const body = await r.json();
+  return { status: 200, data: body && body.data };
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {

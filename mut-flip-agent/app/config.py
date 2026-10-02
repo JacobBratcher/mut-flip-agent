@@ -16,6 +16,7 @@ DEFAULTS = {
     "api_token": "",
     "api_token_header": "Authorization",
     "requests_per_minute": 20,
+    "http_requests_per_minute": 40,
     "watchlist": [],
     "discover_all_players": True,
     "min_ovr": 85,

@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 log = logging.getLogger(__name__)
-LEASE_SECONDS = 120
+LEASE_SECONDS = 300
 MAX_BODY = 2_000_000
 
 
@@ -57,6 +57,7 @@ def serve(agent, port):
             if u.path == "/config":
                 rpm = max(1, int(agent.cfg["requests_per_minute"]))
                 return self._send(200, {"platform": agent.cfg["platform"],
+                                        "request_budget_version": 1,
                                         "interval_ms": int(60000 / rpm)})
             if u.path == "/queue":
                 n = min(10, max(1, int(parse_qs(u.query).get("n", ["5"])[0])))
@@ -69,7 +70,10 @@ def serve(agent, port):
                 with agent.lock:
                     since = max(agent.last_ingest, getattr(agent, "started", 0))
                     state = agent.feeder_state
-                return self._send(200, {"ingest_age": int(time.time() - since), "state": state})
+                budget = agent.api.budget.snapshot()
+                return self._send(200, {"ingest_age": int(time.time() - since),
+                                        "state": "blocked" if budget["cooldown_seconds"] else state,
+                                        "request_budget": budget})
             self._send(404, {"error": "not found"})
 
         def do_POST(self):
@@ -78,6 +82,16 @@ def serve(agent, port):
             u, body = urlparse(self.path), self._body()
             if body is None:
                 return self._send(400, {"error": "bad body"})
+            if not isinstance(body, dict):
+                return self._send(400, {"error": "object required"})
+            # Independent of agent.lock: discovery may hold it while waiting for a slot.
+            if u.path == "/request-permit":
+                return self._send(200, agent.api.budget.acquire())
+            if u.path == "/request-result":
+                status = body.get("status")
+                if type(status) is not int or not 0 <= status <= 599:
+                    return self._send(400, {"error": "HTTP status required"})
+                return self._send(200, agent.api.budget.record(status, body.get("retry_after")))
             if u.path == "/ingest":
                 uid, data = body.get("uid"), body.get("data")
                 if not isinstance(uid, str) or not isinstance(data, dict):

@@ -1,5 +1,5 @@
 name: MUT Flip Agent
-version: "1.8.1"
+version: "1.9.0"
 slug: mut_flip_agent
 description: Watches mut.gg PC prices and sends Discord alerts for flips and long-term investments.
 url: https://github.com/JacobBratcher/mut-flip-agent
@@ -25,6 +25,7 @@ options:
   api_token: ""
   api_token_header: Authorization
   requests_per_minute: 20
+  http_requests_per_minute: 40
   watchlist: []
   discover_all_players: true
   min_ovr: 85
@@ -82,6 +83,7 @@ schema:
   api_token: password?
   api_token_header: str
   requests_per_minute: int(1,120)
+  http_requests_per_minute: int(1,120)?
   watchlist:
     - str
   discover_all_players: bool

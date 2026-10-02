@@ -12,6 +12,7 @@ from .client import Blocked, MutGG, normalize_watch, parse_live, parse_price, pa
 from .db import DB
 from .ha import HA
 from .notify import Discord
+from .rate_limit import RequestBudget
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("agent")
@@ -22,7 +23,8 @@ KEEP_DAYS = 35          # sales history kept: enough to learn promo reactions an
 class Agent:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.api = MutGG(cfg)
+        self.api = MutGG(cfg, RequestBudget(cfg.get("http_requests_per_minute", 40),
+                                           config.data_dir() / "request-budget.json"))
         self.db = DB(config.data_dir() / "mut.db")
         self.discord = Discord(cfg["discord_webhook_url"])
         self.tax = cfg["tax_rate"]
@@ -56,46 +58,49 @@ class Agent:
 
     # ---------------------------------------------------------------- setup
     def sync_items(self):
-        for entry in self.cfg["watchlist"]:
-            parsed = normalize_watch(entry)
-            if not parsed:
-                log.warning("Skipping watchlist entry %r (not a mut.gg URL or id)", entry)
-                continue
-            uid, url = parsed
-            self.watched.add(uid)
-            self.db.upsert_item(uid, url, tier="watch")
-        # Anything no longer on the watchlist drops back to normal scheduling.
-        for row in self.db.all_items():
-            if row["tier"] == "watch" and row["uid"] not in self.watched:
-                self.db.set_schedule(row["uid"], "new", 0)
-        min_ovr = int(self.cfg.get("min_ovr") or 0)
-        changed = self.db.get("discovery_min_ovr") != str(min_ovr)
+        with self.lock:
+            for entry in self.cfg["watchlist"]:
+                parsed = normalize_watch(entry)
+                if not parsed:
+                    log.warning("Skipping watchlist entry %r (not a mut.gg URL or id)", entry)
+                    continue
+                uid, url = parsed
+                self.watched.add(uid)
+                self.db.upsert_item(uid, url, tier="watch")
+            # Anything no longer on the watchlist drops back to normal scheduling.
+            for row in self.db.all_items():
+                if row["tier"] == "watch" and row["uid"] not in self.watched:
+                    self.db.set_schedule(row["uid"], "new", 0)
+            min_ovr = int(self.cfg.get("min_ovr") or 0)
+            changed = self.db.get("discovery_min_ovr") != str(min_ovr)
         if self.cfg["discover_all_players"] and (changed or self.discovery_due()):
             self.last_discovery_try = time.time()
             found = self.api.discover(min_ovr)
-            if found:
-                # First run or a new OVR filter: everything found is "already out", not new.
-                baseline = changed or not self.db.all_items()
-                for uid, url, name in found:
-                    self.db.upsert_item(uid, url)
-                    if name and not (self.db.item(uid)["name"] or ""):
-                        self.db.set_name(uid, name)
-                dropped = self.db.keep_only([u for u, _, _ in found] + list(self.watched))
-                if dropped:
-                    log.info("Stopped tracking %d cards outside the filter", dropped)
-                fresh = self.db.mark_seen([u for u, _, _ in found], time.time(), baseline)
-                if fresh:
-                    names = {u: n or u for u, _, n in found}
-                    for uid in fresh:
-                        self.db.upsert_item(uid, tier="fresh")      # check them right away
-                    self.fresh_map = self.db.first_seen()
-                    self.rebalance()
-                    self.discord.new_cards([names[u] for u in fresh], self.plan["fresh_seconds"],
-                                           self.cfg["tiers"])
-                    log.info("NEW %d cards: %s", len(fresh), ", ".join(names[u] for u in fresh[:10]))
-                self.db.put("last_discovery", time.time())
-                self.db.put("discovery_min_ovr", min_ovr)
-        self.rebalance()
+            with self.lock:
+                if found:
+                    # First run or a new OVR filter: everything found is "already out", not new.
+                    baseline = changed or not self.db.all_items()
+                    for uid, url, name in found:
+                        self.db.upsert_item(uid, url)
+                        if name and not (self.db.item(uid)["name"] or ""):
+                            self.db.set_name(uid, name)
+                    dropped = self.db.keep_only([u for u, _, _ in found] + list(self.watched))
+                    if dropped:
+                        log.info("Stopped tracking %d cards outside the filter", dropped)
+                    fresh = self.db.mark_seen([u for u, _, _ in found], time.time(), baseline)
+                    if fresh:
+                        names = {u: n or u for u, _, n in found}
+                        for uid in fresh:
+                            self.db.upsert_item(uid, tier="fresh")      # check them right away
+                        self.fresh_map = self.db.first_seen()
+                        self.rebalance()
+                        self.discord.new_cards([names[u] for u in fresh], self.plan["fresh_seconds"],
+                                               self.cfg["tiers"])
+                        log.info("NEW %d cards: %s", len(fresh), ", ".join(names[u] for u in fresh[:10]))
+                    self.db.put("last_discovery", time.time())
+                    self.db.put("discovery_min_ovr", min_ovr)
+        with self.lock:
+            self.rebalance()
 
     def discovery_due(self):
         """Look for new cards every 6 h, and every 30 min for 3 h after a promo drops."""
@@ -264,8 +269,8 @@ class Agent:
 
     def _check_news(self):
         try:
-            articles = market.fetch_news(self.web)
-        except (requests.RequestException, ValueError) as e:
+            articles = market.fetch_news(self.api)
+        except (requests.RequestException, ValueError, Blocked) as e:
             log.warning("News check failed: %s", e)
             return
         self.news = articles
@@ -311,8 +316,8 @@ class Agent:
 
     def _backfill_promos(self):
         try:
-            found = market.backfill_promos(self.web, time.time() - KEEP_DAYS * DAY)
-        except (requests.RequestException, ValueError) as e:
+            found = market.backfill_promos(self.api, time.time() - KEEP_DAYS * DAY)
+        except (requests.RequestException, ValueError, Blocked) as e:
             log.warning("Promo backfill failed (will retry): %s", e)
             self._backfilling = False
             return
@@ -480,9 +485,11 @@ class Agent:
         while True:
             try:
                 with self.lock:
-                    if time.time() - last_sync > 3600 or self.discovery_due():
-                        self.sync_items()
-                        last_sync = time.time()
+                    sync_due = time.time() - last_sync > 3600 or self.discovery_due()
+                if sync_due:
+                    self.sync_items()
+                    last_sync = time.time()
+                with self.lock:
                     self.maybe_digest()
                     self.maybe_market()
                     self.publish()
@@ -525,7 +532,7 @@ class Agent:
         self.status = "blocked"
         self.last_publish = 0
         self.publish()
-        self.backoff = min(3600, max(60, self.backoff * 2, e.retry_after))
+        self.backoff = max(e.retry_after, min(3600, max(60, self.backoff * 2)))
         log.warning("Blocked by mut.gg (%s); pausing %ss", e, self.backoff)
         if time.time() - float(self.db.get("last_block_alert", 0)) > 6 * 3600:
             self.discord.status(

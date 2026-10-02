@@ -40,6 +40,13 @@ def test_feeder_flow(tmp_path, monkeypatch):
     port = httpd.server_address[1]
     try:
         assert call(port, "GET", "/queue?n=5", token="nope")[0] == 401
+        assert call(port, "GET", "/config")[1]["request_budget_version"] == 1
+        assert call(port, "POST", "/request-permit", {}, token="nope")[0] == 401
+        assert call(port, "POST", "/request-permit", {})[1]["allowed"]
+        assert not call(port, "POST", "/request-permit", {})[1]["allowed"]
+        assert call(port, "POST", "/request-result", {"status": "429"})[0] == 400
+        assert call(port, "POST", "/request-result", {"status": 429, "retry_after": "7200"})[1]["wait_ms"] > 7199000
+        assert call(port, "POST", "/request-permit", {})[1]["blocked"]
         code, q = call(port, "GET", "/queue?n=5")
         assert code == 200 and [i["uid"] for i in q["items"]] == ["27-1"]
         assert call(port, "GET", "/queue?n=5")[1]["items"] == []      # leased, not reissued
@@ -56,7 +63,8 @@ def test_feeder_flow(tmp_path, monkeypatch):
         assert len(agent.discord.listings) == 1
         assert call(port, "POST", "/ingest", {"uid": "27-999", "data": payload})[1]["ok"] is False
         code, h = call(port, "GET", "/health")
-        assert code == 200 and h["ingest_age"] < 5 and h["state"] == "ok"
+        assert code == 200 and h["ingest_age"] < 5 and h["state"] == "blocked"
+        assert h["request_budget"]["cooldown_seconds"] > 7190
         assert call(port, "GET", "/health", token="nope")[0] == 401
     finally:
         httpd.shutdown()
