@@ -1,9 +1,11 @@
-import time
+from datetime import datetime, timezone
 
 from app import analysis
 from app.config import DEFAULTS
 
-NOW = time.time()
+# The synthetic daily sale groups must not straddle midnight just because CI
+# runs late in the day. All functions under test receive this explicit clock.
+NOW = datetime(2026, 10, 2, 12, tzinfo=timezone.utc).timestamp()
 H, D = 3600, 86400
 TAX = 0.10
 
