@@ -40,6 +40,11 @@ def test_feeder_flow(tmp_path, monkeypatch):
     port = httpd.server_address[1]
     try:
         assert call(port, "GET", "/queue?n=5", token="nope")[0] == 401
+        code, health = call(port, "GET", "/health")
+        assert health["queue"] == {"tracked": 1, "due": 1, "next_due_seconds": 0}
+        assert health["clients"] == []
+        # Reading health must not lease the due card.
+        assert call(port, "GET", "/health")[1]["queue"]["due"] == 1
         assert call(port, "GET", "/config")[1]["request_budget_version"] == 1
         assert call(port, "POST", "/request-permit", {}, token="nope")[0] == 401
         assert call(port, "POST", "/request-permit", {})[1]["allowed"]
@@ -65,6 +70,13 @@ def test_feeder_flow(tmp_path, monkeypatch):
         code, h = call(port, "GET", "/health")
         assert code == 200 and h["ingest_age"] < 5 and h["state"] == "blocked"
         assert h["request_budget"]["cooldown_seconds"] > 7190
+        assert h["queue"]["tracked"] == 1 and h["queue"]["due"] == 0
+        activity = h["clients"][0]["routes"]
+        assert activity["queue:5"]["calls"] == 2
+        assert activity["queue:5"]["items"] == 1
+        assert activity["request-permit"]["calls"] == 3  # excludes unauthorized request
+        assert activity["ingest"]["calls"] == 4
+        assert "secret" not in json.dumps(h)
         assert call(port, "GET", "/health", token="nope")[0] == 401
     finally:
         httpd.shutdown()
