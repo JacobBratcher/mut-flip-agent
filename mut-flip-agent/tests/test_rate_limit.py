@@ -75,6 +75,31 @@ def test_persisted_spacing_prevents_a_restart_burst(tmp_path):
     assert not RequestBudget(40, path, clock).acquire()["allowed"]
 
 
+def test_raise_temporary_ceiling_without_resetting_pace_or_spacing(tmp_path):
+    clock = Clock()
+    path = tmp_path / "budget.json"
+    RequestBudget(16, path, clock).acquire()
+    budget = RequestBudget(40, path, clock)
+    assert budget.rate == 16
+    assert budget.target == 40
+    assert not budget.acquire()["allowed"]
+    clock.now += 60
+    for _ in range(20):
+        budget.record(200)
+    assert budget.rate == 17
+
+
+def test_raising_configuration_keeps_refusal_limit_and_cooldown(tmp_path):
+    clock = Clock()
+    path = tmp_path / "budget.json"
+    budget = RequestBudget(16, path, clock)
+    budget.record(429, "7200")
+    budget = RequestBudget(40, path, clock)
+    assert budget.rate == 8
+    assert budget.target == pytest.approx(14.4)
+    assert budget.acquire()["wait_ms"] == 7200000
+
+
 def test_recovery_stays_below_a_previously_refused_rate_after_restart(tmp_path):
     clock = Clock()
     path = tmp_path / "budget.json"
