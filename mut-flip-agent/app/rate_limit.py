@@ -37,6 +37,11 @@ class RequestBudget:
                 if not math.isfinite(value):
                     raise ValueError(f"Invalid persisted request budget: {key}")
                 setattr(self, key, value)
+            # Before any refusal, target is only the old configured ceiling, not
+            # a learned limit. Allow a raised configuration to take effect while
+            # retaining the current pace and its gradual recovery.
+            if self.blocked_until == 0:
+                self.target = self.ceiling
             self.target = min(self.ceiling, max(self.floor, self.target))
             self.rate = min(self.target, max(self.floor, self.rate))
 
