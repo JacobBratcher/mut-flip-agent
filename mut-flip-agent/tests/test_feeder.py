@@ -80,3 +80,42 @@ def test_feeder_flow(tmp_path, monkeypatch):
         assert call(port, "GET", "/health", token="nope")[0] == 401
     finally:
         httpd.shutdown()
+
+
+def test_refreshing_snapshot_cannot_alert_or_count_as_fresh(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    cfg = DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False,
+                      "fetch_mode": "extension", "feeder_token": "secret"}
+    agent = main.Agent(cfg)
+    agent.discord = Disc()
+    agent.db.upsert_item("27-1", "")
+    httpd = feeder.serve(agent, 0)
+    port = httpd.server_address[1]
+    sales = [{"soldPrice": 500_000, "soldDate": iso(h)} for h in range(1, 40, 3)]
+    end = (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat()
+    data = {"updating": True, "pricesData": {"completedAuctions": sales,
+            "liveAuctions": [{"buyNowPrice": 360_000, "endDate": end}]}}
+    try:
+        call(port, "GET", "/queue?n=5")
+        code, response = call(port, "POST", "/ingest", {"uid": "27-1", "data": data})
+        assert code == 200 and response == {"ok": False, "reason": "prices refreshing", "retry_after": 60}
+        assert agent.discord.listings == []
+        assert agent.db.sales_since("27-1", 0) == []
+        assert agent.checks_today == 0 and agent.last_ingest == 0 and agent.last_price_ts is None
+        health = call(port, "GET", "/health")[1]
+        assert health["refreshes_rejected"] == 1
+        assert 55 <= health["queue"]["next_due_seconds"] <= 60
+
+        # The finished refresh removed the sold auction: no stale alert was logged.
+        data["updating"] = False
+        data["pricesData"]["liveAuctions"] = []
+        assert call(port, "POST", "/ingest", {"uid": "27-1", "data": data})[1]["ok"]
+        assert agent.checks_today == 1 and agent.last_ingest > 0
+        assert agent.discord.listings == [] and agent.db.recent_flips() == []
+
+        # A later finished snapshot with a real opportunity still alerts normally.
+        data["pricesData"]["liveAuctions"] = [{"buyNowPrice": 360_000, "endDate": end}]
+        assert call(port, "POST", "/ingest", {"uid": "27-1", "data": data})[1]["ok"]
+        assert len(agent.discord.listings) == 1
+    finally:
+        httpd.shutdown()
