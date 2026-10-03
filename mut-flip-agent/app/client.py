@@ -174,6 +174,9 @@ def parse_live(data: dict) -> list[tuple[int, float]]:
     from datetime import datetime
     out = []
     for a in (data.get("pricesData") or {}).get("liveAuctions") or []:
+        # Some snapshots can retain completed entries in the live collection.
+        if a.get("soldDate") or a.get("soldPrice"):
+            continue
         p, end = a.get("buyNowPrice"), a.get("endDate")
         if not isinstance(p, (int, float)) or p <= 0 or not end:
             continue

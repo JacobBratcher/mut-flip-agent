@@ -13,6 +13,7 @@ from .db import DB
 from .ha import HA
 from .notify import Discord
 from .rate_limit import RequestBudget
+from .listing_checks import ListingChecks
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("agent")
@@ -40,6 +41,7 @@ class Agent:
         self.checks_day, self.checks_today = datetime.now().date(), 0
         self.last_ingest = 0
         self.refreshes_rejected = 0
+        self.listing_checks = ListingChecks()
         self.started = time.time()
         self.feeder_state = ""
         self.lock = threading.RLock()
@@ -181,9 +183,12 @@ class Agent:
         fresh = analysis.is_fresh(row["name"], self.fresh_map.get(uid), now, self.cfg)
         deal = analysis.live_deal(listings, history, self.cfg, self.tax, now,
                                   sales_24h=parse_volume(data), mutgg_price=parse_price(data))
+        key = f"live:{deal.bin_price}:{int(deal.ends)}" if deal else None
+        already_alerted = key and self.db.last_alert(uid, key)
+        verified, verify_at = self.listing_checks.check(
+            uid, None if already_alerted else deal, analysis.recent_prices(history), now)
         if deal:
-            key = f"live:{deal.bin_price}:{int(deal.ends)}"
-            if not self.db.last_alert(uid, key):
+            if verified and not already_alerted:
                 self.discord.listing(row["name"] or uid, row["url"], deal, self.cfg["platform"],
                                      promo_today=self.promo_today(), fresh=fresh)
                 self.db.log_alert(uid, key)
@@ -202,6 +207,9 @@ class Agent:
             tier = self.db.item(uid)["tier"]
         if tier in ("watch", "fresh", "hot") and self.cfg["fetch_mode"] != "extension":
             self.ensure_name(self.db.item(uid))
+        if verify_at is not None:
+            scheduled = self.db.item(uid)
+            self.db.set_schedule(uid, scheduled["tier"], min(scheduled["next_check"], verify_at))
         return True
 
     def ensure_name(self, row):

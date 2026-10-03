@@ -22,13 +22,14 @@ function background(responses, overrides = {}) {
         set: async (patch) => Object.assign(storage, structuredClone(patch)),
       } },
       alarms: { create: noop, onAlarm: event },
-      runtime: { onStartup: event, onInstalled: event, onMessage: event },
+      runtime: { onStartup: event, onInstalled: event, onMessage: event,
+                 getManifest: () => ({ version: '1.4.0' }) },
       tabs: { sendMessage: async () => { calls.push('mut.gg'); return responses.shift(); } },
     },
     fetch: async (url, options) => {
       const endpoint = new URL(url).pathname;
       const body = JSON.parse(options.body || '{}');
-      calls.push({ endpoint, body });
+      calls.push({ endpoint, body, version: options.headers['X-Feeder-Version'] });
       const defaults = {
         '/request-permit': { allowed: true, blocked: false, wait_ms: 0, rpm: 32 },
         '/request-result': { wait_ms: body.status === 429 ? 7200000 : 0 },
@@ -51,6 +52,7 @@ test('every refresh retry obtains a permit and reports its result before ingest'
   ]);
   assert.equal(fixture.storage.stats.requests, 2);
   assert.equal(fixture.storage.stats.checks, 1);
+  assert.ok(fixture.calls.filter(c => c.endpoint).every(c => c.version === '1.4.0'));
 });
 
 test('exhausted updating responses never count as fresh checks', async () => {
@@ -86,8 +88,9 @@ test('content script makes exactly one request even while prices are updating', 
   const context = vm.createContext({
     AbortSignal,
     chrome: { runtime: { onMessage: { addListener: () => {} } } },
-    fetch: async () => {
+    fetch: async (_url, options) => {
       requests++;
+      assert.equal(options.cache, 'no-store');
       return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ data: { updating: true } }) };
     },
   });

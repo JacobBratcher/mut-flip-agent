@@ -40,7 +40,8 @@ async function agent(method, path, body) {
   const { agentUrl, token } = await get(["agentUrl", "token"]);
   const r = await fetch(agentUrl.replace(/\/$/, "") + path, {
     method,
-    headers: { "Content-Type": "application/json", "X-Feeder-Token": token || "" },
+    headers: { "Content-Type": "application/json", "X-Feeder-Token": token || "",
+               "X-Feeder-Version": chrome.runtime.getManifest().version },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(15000),
   });

@@ -63,19 +63,24 @@ def test_feeder_flow(tmp_path, monkeypatch):
                                   "liveAuctions": [{"buyNowPrice": 360_000, "endDate": end, "bidCount": 0}]}}
         code, r = call(port, "POST", "/ingest", {"uid": "27-1", "data": payload})
         assert code == 200 and r["ok"]
+        assert agent.discord.listings == []
+        verified_at = main.time.time() + 66
+        monkeypatch.setattr(main.time, "time", lambda: verified_at)
+        call(port, "POST", "/ingest", {"uid": "27-1", "data": payload})
         assert len(agent.discord.listings) == 1 and agent.discord.listings[0][1].bin_price == 360_000
         call(port, "POST", "/ingest", {"uid": "27-1", "data": payload})   # same listing: no repeat
         assert len(agent.discord.listings) == 1
         assert call(port, "POST", "/ingest", {"uid": "27-999", "data": payload})[1]["ok"] is False
         code, h = call(port, "GET", "/health")
         assert code == 200 and h["ingest_age"] < 5 and h["state"] == "blocked"
-        assert h["request_budget"]["cooldown_seconds"] > 7190
+        assert h["request_budget"]["cooldown_seconds"] > 7100
         assert h["queue"]["tracked"] == 1 and h["queue"]["due"] == 0
         activity = h["clients"][0]["routes"]
         assert activity["queue:5"]["calls"] == 2
         assert activity["queue:5"]["items"] == 1
         assert activity["request-permit"]["calls"] == 3  # excludes unauthorized request
-        assert activity["ingest"]["calls"] == 4
+        assert activity["ingest"]["calls"] == 5
+        assert h["listing_verification"]["confirmed"] == 1
         assert "secret" not in json.dumps(h)
         assert call(port, "GET", "/health", token="nope")[0] == 401
     finally:
@@ -115,6 +120,10 @@ def test_refreshing_snapshot_cannot_alert_or_count_as_fresh(tmp_path, monkeypatc
 
         # A later finished snapshot with a real opportunity still alerts normally.
         data["pricesData"]["liveAuctions"] = [{"buyNowPrice": 360_000, "endDate": end}]
+        assert call(port, "POST", "/ingest", {"uid": "27-1", "data": data})[1]["ok"]
+        assert agent.discord.listings == []
+        verified_at = main.time.time() + 66
+        monkeypatch.setattr(main.time, "time", lambda: verified_at)
         assert call(port, "POST", "/ingest", {"uid": "27-1", "data": data})[1]["ok"]
         assert len(agent.discord.listings) == 1
     finally:
