@@ -39,6 +39,7 @@ class Agent:
         self.last_price_ts = None
         self.checks_day, self.checks_today = datetime.now().date(), 0
         self.last_ingest = 0
+        self.refreshes_rejected = 0
         self.started = time.time()
         self.feeder_state = ""
         self.lock = threading.RLock()
@@ -144,8 +145,14 @@ class Agent:
         self.process(row, data)
 
     def process(self, row, data):
-        """Handle one card's price payload. Alerts go out immediately."""
+        """Handle a finished price snapshot; return whether it was accepted."""
         uid, now = row["uid"], time.time()
+        # Older feeders can submit the cached snapshot returned during a refresh.
+        # Its liveAuctions can contain auctions already bought before their endDate.
+        if data.get("updating"):
+            self.refreshes_rejected += 1
+            self.db.set_schedule(uid, row["tier"], now + 60)
+            return False
         self.status = "running"
         self.last_ingest = now
         self.last_price_ts = datetime.now().astimezone().isoformat()
@@ -195,6 +202,7 @@ class Agent:
             tier = self.db.item(uid)["tier"]
         if tier in ("watch", "fresh", "hot") and self.cfg["fetch_mode"] != "extension":
             self.ensure_name(self.db.item(uid))
+        return True
 
     def ensure_name(self, row):
         """Fetch the full card name only for cards we care about (saves ~4k requests)."""

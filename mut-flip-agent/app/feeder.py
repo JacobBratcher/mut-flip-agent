@@ -88,6 +88,7 @@ def serve(agent, port):
                 with agent.lock:
                     since = max(agent.last_ingest, getattr(agent, "started", 0))
                     state = agent.feeder_state
+                    refreshes_rejected = agent.refreshes_rejected
                     now = time.time()
                     row = agent.db.c.execute(
                         "SELECT COUNT(*) total, COALESCE(SUM(next_check<=?), 0) due, "
@@ -102,6 +103,7 @@ def serve(agent, port):
                 budget = agent.api.budget.snapshot()
                 return self._send(200, {"ingest_age": int(time.time() - since),
                                         "state": "blocked" if budget["cooldown_seconds"] else state,
+                                        "refreshes_rejected": refreshes_rejected,
                                         "request_budget": budget, "queue": queue, "clients": activity})
             self._send(404, {"error": "not found"})
 
@@ -133,10 +135,13 @@ def serve(agent, port):
                     if not row:
                         return self._send(200, {"ok": False, "reason": "untracked card"})
                     try:
-                        agent.process(row, data)
+                        accepted = agent.process(row, data)
                     except Exception:
                         log.exception("ingest failed for %s", uid)
                         return self._send(500, {"error": "processing failed"})
+                    if not accepted:
+                        return self._send(200, {"ok": False, "reason": "prices refreshing",
+                                                "retry_after": 60})
                     agent.feeder_state = "ok"
                 return self._send(200, {"ok": True})
             if u.path == "/status":
