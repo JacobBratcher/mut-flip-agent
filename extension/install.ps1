@@ -111,12 +111,22 @@ $manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
 $manifest.host_permissions = @($manifest.host_permissions) + $origin
 [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 10), $utf8)
 
+# Each install gets a new unpacked-extension identity. Replacing files under an
+# existing extension path can leave a previous service worker registered in the
+# browser profile. Keep the canonical folder for saved settings and backups.
+$runtimeRoot = Join-Path $root 'runtime'
+New-Item -ItemType Directory -Force $runtimeRoot | Out-Null
+$runtimeExt = Join-Path $runtimeRoot ("feeder-$($manifest.version)-" + [Guid]::NewGuid().ToString('N'))
+Copy-Item $ext $runtimeExt -Recurse
+Write-Host "  Loading fresh worker from $runtimeExt"
+
 # 6. Launcher: a normal Chromium window, hidden so it's not in the taskbar.
 # (Not headless: headless Chrome identifies itself as HeadlessChrome and mut.gg blocks it.)
 # A small keeper script starts the feeder, hides its windows, and restarts it if it closes.
 $flags = @(
     "--user-data-dir=`"$profileDir`"",
-    "--load-extension=`"$ext`"",
+    "--disable-extensions-except=`"$runtimeExt`"",
+    "--load-extension=`"$runtimeExt`"",
     '--no-first-run', '--no-default-browser-check',
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
