@@ -95,6 +95,11 @@ def test_listing_then_sale_alerts_once(tmp_path, monkeypatch):
     agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": sales}})
     agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": sales,
         "liveAuctions": [{"buyNowPrice": 360_000, "endDate": end}]}})
+    assert agent.discord.listings == []
+    verified_at = main.time.time() + 66
+    monkeypatch.setattr(main.time, "time", lambda: verified_at)
+    agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": sales,
+        "liveAuctions": [{"buyNowPrice": 360_000, "endDate": end}]}})
     assert len(agent.discord.listings) == 1
     # The listing sells: it now appears as a completed sale at 360k.
     sold = [{"soldPrice": 360_000, "soldDate": iso(0.01)}] + sales
@@ -124,6 +129,11 @@ def test_snipes_only_by_default(tmp_path, monkeypatch):
     end = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
     agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": cheap_sale,
         "liveAuctions": [{"buyNowPrice": 350_000, "endDate": end}]}})
+    assert agent.discord.listings == []
+    verified_at = main.time.time() + 66
+    monkeypatch.setattr(main.time, "time", lambda: verified_at)
+    agent.process(agent.db.item("27-1"), {"pricesData": {"completedAuctions": cheap_sale,
+        "liveAuctions": [{"buyNowPrice": 350_000, "endDate": end}]}})
     assert len(agent.discord.listings) == 1
     row = agent.db.recent_flips()[0]
     assert row["ends"] and row["buy"] == 350_000
@@ -133,6 +143,27 @@ def _stamp(sales, shift_seconds):
     """mut.gg's payload: sold dates recomputed at refresh time, so they drift a little."""
     return [{"soldPrice": p, "soldDate": (datetime.now(timezone.utc)
              - timedelta(hours=h) + timedelta(seconds=shift_seconds)).isoformat()} for p, h in sales]
+
+
+def test_burrow_sold_price_overlap_is_not_a_live_alert(tmp_path, monkeypatch):
+    from tests.test_feeder import Disc
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    agent = main.Agent(DEFAULTS | {"discord_webhook_url": "x", "discover_all_players": False})
+    agent.discord = Disc()
+    agent.db.upsert_item("27-116020948", "")
+    end = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    payload = {"pricesData": {
+        "completedAuctions": [{"soldPrice": p, "soldDate": iso(i + 1)}
+                              for i, p in enumerate([140000, 125500, 143000, 111500, 145500])],
+        "liveAuctions": [{"buyNowPrice": 111500, "endDate": end},
+                         {"buyNowPrice": 140000, "endDate": end}],
+        "summary": {"price": 130000}, "volume": {"day": {"sales": 26}}}}
+    agent.process(agent.db.item("27-116020948"), payload)
+    verified_at = main.time.time() + 66
+    monkeypatch.setattr(main.time, "time", lambda: verified_at)
+    agent.process(agent.db.item("27-116020948"), payload)
+    assert agent.discord.listings == [] and agent.db.recent_flips() == []
+    assert agent.listing_checks.ambiguous == 2
 
 
 def test_restamped_sales_are_stored_once(tmp_path, monkeypatch):

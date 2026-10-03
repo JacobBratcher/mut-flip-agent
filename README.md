@@ -34,6 +34,8 @@ Runs 24/7 as a Home Assistant add-on or a plain Docker container. Data access is
 6. **Only cards you can resell fast:** at least `min_sales_24h` (3) sales in the last 24h (mut.gg's own count).
 7. **No falling knives:** skipped if the card's latest sales are down `max_drop` (15%) or more from the same time yesterday.
 8. **Graded:** 🟢 **SAFE** = sells 8+/day, flat or rising, 15%+ ROI, and still clears `min_profit` at mut.gg's price. 🟡 **GOOD** = passes the rules above. Set `only_safe: true` to get only green ones.
+9. **Confirm before alerting:** candidates must still qualify in a second completed snapshot at least 65 seconds later (within 180 seconds), with the same price and auction end within 15 seconds. The extra check uses the normal queue and request budget. No alert is sent if the auction disappears, expires, has under 30 seconds left, or its price matches one of the latest five completed sales. That last rule deliberately skips ambiguous same-price copies, including some valid listings. Entries carrying `soldDate` or `soldPrice` in the live collection are ignored. Pending confirmations reset after a server restart. This adds at least 65 seconds to alerts; it cannot guarantee the auction remains available afterward.
+10. Alerts show the absolute scheduled auction end and the last check time. Historical Discord alerts remain historical snapshots, not current availability. Authenticated `/health` exposes pending/confirmed checks and ambiguous candidates skipped.
 
 **Investments** (off by default; sent once a day at `digest_hour` when `invest.enabled` is on)
 - At least `min_days_history` days of data and `min_daily_sales` sales/day (so you can actually sell later).

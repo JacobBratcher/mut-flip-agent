@@ -59,20 +59,7 @@ if (-not $chrome) {
 if (-not $chrome) { throw 'Chromium was not found after install. Install Hibbiki Chromium manually, then re-run.' }
 Write-Host "  Chromium: $chrome" -ForegroundColor Green
 
-# 3. Close a previous feeder instance (only the one using our profile).
-# Killing the parent takes its renderer children with it, so by the time the loop
-# reaches those they are already gone - never treat that as a failure.
-try {
-    $stale = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -in 'chrome.exe', 'powershell.exe' -and $_.CommandLine -like '*MUTFlipFeeder*' -and $_.ProcessId -ne $PID })
-    foreach ($p in $stale) {
-        try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
-    }
-    if ($stale.Count) { Write-Host "  Closed $($stale.Count) old feeder process(es)." }
-} catch { Write-Host '  (Could not check for an old feeder window; continuing.)' }
-Start-Sleep -Seconds 2
-
-# 4. Download the extension from GitHub.
+# 3. Download the extension from GitHub.
 Write-Host 'Downloading extension ...'
 $zip = Join-Path $env:TEMP 'mut-flip-agent.zip'
 $src = Join-Path $env:TEMP 'mut-flip-agent-src'
@@ -84,6 +71,33 @@ $srcExt = Get-ChildItem $src -Directory -Recurse -Filter 'extension' |
     Where-Object { Test-Path (Join-Path $_.FullName 'manifest.json') } |
     Select-Object -First 1
 if (-not $srcExt) { throw 'The download did not contain the extension folder. Try again.' }
+# Validate the download before stopping the working feeder.
+$downloadManifest = Get-Content (Join-Path $srcExt.FullName 'manifest.json') -Raw | ConvertFrom-Json
+$downloadWorker = Get-Content (Join-Path $srcExt.FullName 'background.js') -Raw
+if ([version]$downloadManifest.version -lt [version]'1.4.0' -or $downloadWorker -notmatch 'X-Feeder-Version') {
+    throw 'Downloaded feeder is missing the updated scanning worker. Existing feeder was not stopped.'
+}
+if (Test-Path $ext) {
+    $backup = Join-Path $root ('extension-backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    Copy-Item $ext $backup -Recurse
+    Write-Host "Saved previous extension to $backup"
+}
+# 4. Close a previous feeder instance (only the one using our profile).
+# Killing the parent takes its renderer children with it, so by the time the loop
+# reaches those they are already gone - never treat that as a failure.
+try {
+    $stale = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in 'chrome.exe', 'powershell.exe', 'pwsh.exe' -and $_.CommandLine -like '*MUTFlipFeeder*' -and $_.ProcessId -ne $PID } | Sort-Object @{Expression={ if ($_.Name -eq 'chrome.exe') { 1 } else { 0 } }})
+    foreach ($p in $stale) {
+        try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    if ($stale.Count) { Write-Host "  Closed $($stale.Count) old feeder process(es)." }
+} catch { throw 'Could not stop the previous feeder. Files have not been replaced.' }
+Start-Sleep -Seconds 2
+$remaining = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+    Where-Object { $_.Name -in 'chrome.exe', 'powershell.exe', 'pwsh.exe' -and $_.CommandLine -like '*MUTFlipFeeder*' -and $_.ProcessId -ne $PID })
+if ($remaining.Count) { throw 'A previous feeder process is still running. Files have not been replaced.' }
+
 New-Item -ItemType Directory -Force $root | Out-Null
 if (Test-Path $ext) { Remove-Item $ext -Recurse -Force -ErrorAction SilentlyContinue }
 Copy-Item $srcExt.FullName $ext -Recurse
@@ -249,8 +263,24 @@ foreach ($s in $shortcuts) {
 # 7. Don't let the PC sleep while plugged in (the feeder stops if it sleeps).
 try { powercfg /change standby-timeout-ac 0 | Out-Null; powercfg /change hibernate-timeout-ac 0 | Out-Null } catch { }
 
+$startedAt = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 Start-Process -FilePath $wscript -ArgumentList "`"$(Join-Path $root 'feeder.vbs')`""
 Write-Host ''
-Write-Host 'Done. The MUT Flip Feeder is running hidden (not in the taskbar), restarts itself if it closes,' -ForegroundColor Green
+Write-Host "Installed MUT Flip Feeder $($manifest.version). Checking the running worker ..." -ForegroundColor Green
+$verifiedWorker = $false
+for ($attempt = 0; $attempt -lt 12; $attempt++) {
+    Start-Sleep -Seconds 5
+    try {
+        $health = Invoke-RestMethod "$AgentUrl/health" -Headers @{ 'X-Feeder-Token' = $Token } -TimeoutSec 5
+        $active = @($health.clients | Where-Object { $_.feeder_version -eq $manifest.version -and $_.routes.'queue:1'.last_at -ge $startedAt })
+        if ($active.Count) { $verifiedWorker = $true; break }
+    } catch { }
+}
+if ($verifiedWorker) {
+    Write-Host "Verified: server received requests from feeder $($manifest.version)." -ForegroundColor Green
+} else {
+    Write-Warning 'Files installed, but the server has not confirmed the new worker. Show the feeder window and check its status. Do not assume the update is active yet.'
+}
+Write-Host 'The MUT Flip Feeder runs hidden (not in the taskbar), restarts itself if it closes,' -ForegroundColor Green
 Write-Host 'and starts at every sign-in. Double-click "MUT Flip Feeder" on the desktop to show or hide it.' -ForegroundColor Green
 Write-Host 'When you leave RDP, close the RDP window (disconnect), do NOT sign out.'

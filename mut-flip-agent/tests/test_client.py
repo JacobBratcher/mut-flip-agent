@@ -14,6 +14,14 @@ def test_parse_sales_real_shape():
     assert parse_sales(data) == [(440000, "2026-09-18T02:23:49.034133+00:00")]
 
 
+def test_completed_entries_in_live_collection_are_ignored():
+    from app.client import parse_live
+    base = {"buyNowPrice": 111500, "endDate": "2026-10-03T20:13:50+00:00"}
+    data = {"pricesData": {"liveAuctions": [base | {"soldPrice": 111500},
+            base | {"soldDate": "2026-10-02T18:00:00+00:00"}, base]}}
+    assert len(parse_live(data)) == 1
+
+
 def test_parse_player_list():
     from app.client import parse_player_list
     html = open("/tmp/f.html").read() if __import__("os").path.exists("/tmp/f.html") else ""
@@ -52,3 +60,5 @@ def test_listing_message_shows_both_prices(monkeypatch):
     text = sent[0]["description"]
     assert "Sell at **158,100** (last 5 sales) → **+17,190**" in text
     assert "Sell at **135,100** (mut.gg price) → **−3,510**" in text
+    assert "Last checked:" in text and "Scheduled end:" in text
+    assert ":R>" not in text

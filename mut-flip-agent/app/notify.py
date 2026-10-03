@@ -112,7 +112,9 @@ class Discord:
             tips.append("Promo day: if it doesn't sell at the list price today, hold it for "
                         "tomorrow's bounce instead of dumping it.")
         lines = [f"**Buy Now ≤ {coins(d.max_buy)}** (listed at {coins(d.bin_price)}). "
-                 f"Ends <t:{int(d.ends)}:R>.",
+                 f"Scheduled end: <t:{int(d.ends)}:f>.",
+                 f"Last checked: <t:{int(time.time())}:f>. "
+                 "Still reported live on a second check; availability can change.",
                  f"Sell at **{coins(d.market)}** ({BASIS.get(d.basis, d.basis)}) → "
                  f"**{signed(d.profit)}** after tax ({d.roi:.0%} ROI)"]
         typical = getattr(d, "typical", None)
@@ -127,7 +129,7 @@ class Discord:
                 {"name": "Sold last 24h", "value": str(getattr(d, "sales_24h", 0)), "inline": True},
                 {"name": "Trend", "value": trend_txt, "inline": True},
             ],
-            "footer": {"text": f"{platform.upper()} • live listing"},
+            "footer": {"text": f"{platform.upper()} • MUT.GG listing snapshot • not a reservation"},
         }
         recent = getattr(d, "recent", None)
         if recent:

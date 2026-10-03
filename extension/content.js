@@ -4,7 +4,7 @@
 
 async function fetchPrices(uid, platform) {
   const path = `/api/mutdb/prices/${uid}/${platform}/`;
-  const r = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json" },
+  const r = await fetch(path, { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" },
                                 signal: AbortSignal.timeout(20000) });
   const type = r.headers.get("content-type") || "";
   if (!r.ok || !type.includes("json")) {

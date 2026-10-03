@@ -31,9 +31,11 @@ def serve(agent, port):
             pass
 
         def _activity(self, route, items=0):
-            key = (self.client_address[0], self.headers.get("User-Agent", "")[:200])
+            key = (self.client_address[0], self.headers.get("User-Agent", "")[:200],
+                   self.headers.get("X-Feeder-Version", "unknown")[:30])
             with clients_lock:
-                client = clients.setdefault(key, {"address": key[0], "user_agent": key[1], "routes": {}})
+                client = clients.setdefault(key, {"address": key[0], "user_agent": key[1],
+                                                  "feeder_version": key[2], "routes": {}})
                 clients.move_to_end(key)
                 if len(clients) > 16:
                     clients.popitem(last=False)
@@ -89,6 +91,9 @@ def serve(agent, port):
                     since = max(agent.last_ingest, getattr(agent, "started", 0))
                     state = agent.feeder_state
                     refreshes_rejected = agent.refreshes_rejected
+                    verification = {"pending": len(agent.listing_checks.pending),
+                                    "confirmed": agent.listing_checks.confirmed,
+                                    "ambiguous_skipped": agent.listing_checks.ambiguous}
                     now = time.time()
                     row = agent.db.c.execute(
                         "SELECT COUNT(*) total, COALESCE(SUM(next_check<=?), 0) due, "
@@ -98,12 +103,14 @@ def serve(agent, port):
                              if row["next_at"] is not None else None}
                 with clients_lock:
                     activity = [{"address": c["address"], "user_agent": c["user_agent"],
+                                 "feeder_version": c["feeder_version"],
                                  "routes": {k: dict(v) for k, v in c["routes"].items()}}
                                 for c in clients.values()]
                 budget = agent.api.budget.snapshot()
                 return self._send(200, {"ingest_age": int(time.time() - since),
                                         "state": "blocked" if budget["cooldown_seconds"] else state,
                                         "refreshes_rejected": refreshes_rejected,
+                                        "listing_verification": verification,
                                         "request_budget": budget, "queue": queue, "clients": activity})
             self._send(404, {"error": "not found"})
 
