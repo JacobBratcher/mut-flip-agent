@@ -107,9 +107,24 @@ class DB:
         """Hand out up to n due items and hold them for lease_seconds so they aren't reissued."""
         order = "CASE tier WHEN 'watch' THEN 0 WHEN 'fresh' THEN 0 WHEN 'hot' THEN 1 WHEN 'new' THEN 2 ELSE 3 END"
         now = time.time()
-        rows = self.c.execute(
-            f"SELECT * FROM items WHERE next_check<=? AND lease_until<=? "
-            f"ORDER BY {order}, next_check LIMIT ?", (now, now, n)).fetchall()
+        # A throttled single-card worker can otherwise spend every slot on fresh
+        # cards. Reserve two of every five leases for the oldest overdue work.
+        # Persist the cursor so repeated n=1 calls and restarts keep the same share.
+        cursor = int(self.get('queue_fair_cursor', 0)) % 5
+        rows = []
+        for _ in range(n):
+            ranking = f"{order}, next_check, uid" if cursor < 3 else f"next_check, {order}, uid"
+            row = self.c.execute(
+                "SELECT * FROM items WHERE next_check<=? AND lease_until<=? "
+                f"ORDER BY {ranking} LIMIT 1", (now, now)).fetchone()
+            if not row:
+                break
+            rows.append(row)
+            self.c.execute('UPDATE items SET lease_until=?, next_check=MAX(next_check, ?) WHERE uid=?',
+                           (now + lease_seconds, now + lease_seconds, row['uid']))
+            cursor = (cursor + 1) % 5
+        if rows:
+            self.c.execute('INSERT OR REPLACE INTO state VALUES(?,?)', ('queue_fair_cursor', str(cursor)))
         if fill_capacity and len(rows) < n:
             # Oldest completed snapshot first: spare slots cannot repeatedly scan
             # one popular card or steal an outstanding lease. Due work wins.
