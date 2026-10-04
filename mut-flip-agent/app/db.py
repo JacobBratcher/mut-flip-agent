@@ -51,6 +51,9 @@ class DB:
         cols = {r["name"] for r in self.c.execute("PRAGMA table_info(items)")}
         if "score" not in cols:
             self.c.execute("ALTER TABLE items ADD COLUMN score REAL DEFAULT 0")
+        for col in ("lease_until", "last_success"):
+            if col not in cols:
+                self.c.execute(f"ALTER TABLE items ADD COLUMN {col} REAL DEFAULT 0")
         fcols = {r["name"] for r in self.c.execute("PRAGMA table_info(flips)")}
         for col, typ in (("ends", "REAL"), ("grade", "TEXT"), ("sales_24h", "INTEGER"), ("trend", "REAL"),
                          ("typical", "INTEGER"), ("typical_profit", "INTEGER")):
@@ -85,20 +88,29 @@ class DB:
             f"SELECT * FROM items WHERE next_check<=? ORDER BY {order}, next_check LIMIT 1",
             (time.time(),)).fetchone()
 
-    def lease_due(self, n, lease_seconds):
+    def lease_due(self, n, lease_seconds, fill_capacity=False, min_scan_seconds=65):
         """Hand out up to n due items and hold them for lease_seconds so they aren't reissued."""
         order = "CASE tier WHEN 'watch' THEN 0 WHEN 'fresh' THEN 0 WHEN 'hot' THEN 1 WHEN 'new' THEN 2 ELSE 3 END"
         now = time.time()
         rows = self.c.execute(
-            f"SELECT * FROM items WHERE next_check<=? ORDER BY {order}, next_check LIMIT ?",
-            (now, n)).fetchall()
-        self.c.executemany("UPDATE items SET next_check=? WHERE uid=?",
-                           [(now + lease_seconds, r["uid"]) for r in rows])
+            f"SELECT * FROM items WHERE next_check<=? AND lease_until<=? "
+            f"ORDER BY {order}, next_check LIMIT ?", (now, now, n)).fetchall()
+        if fill_capacity and len(rows) < n:
+            # Oldest completed snapshot first: spare slots cannot repeatedly scan
+            # one popular card or steal an outstanding lease. Due work wins.
+            extra = self.c.execute(
+                "SELECT * FROM items WHERE next_check>? AND lease_until<=? "
+                "AND COALESCE(NULLIF(last_success,0),last_check)>0 AND COALESCE(NULLIF(last_success,0),last_check)<=? "
+                "ORDER BY COALESCE(NULLIF(last_success,0),last_check), uid LIMIT ?",
+                (now, now, now - min_scan_seconds, n - len(rows))).fetchall()
+            rows = list(rows) + list(extra)
+        self.c.executemany("UPDATE items SET lease_until=?, next_check=MAX(next_check, ?) WHERE uid=?",
+                           [(now + lease_seconds, now + lease_seconds, r["uid"]) for r in rows])
         self.c.commit()
         return rows
 
     def set_schedule(self, uid, tier, next_check):
-        self.c.execute("UPDATE items SET tier=?, next_check=?, last_check=? WHERE uid=?",
+        self.c.execute("UPDATE items SET tier=?, next_check=?, last_check=?, lease_until=0 WHERE uid=?",
                        (tier, next_check, time.time(), uid))
         self.c.commit()
 

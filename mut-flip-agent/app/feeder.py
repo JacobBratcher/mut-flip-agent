@@ -81,9 +81,15 @@ def serve(agent, port):
             if u.path == "/queue":
                 n = min(10, max(1, int(parse_qs(u.query).get("n", ["5"])[0])))
                 with agent.lock:
-                    rows = agent.db.lease_due(n, LEASE_SECONDS)
+                    rows = agent.db.lease_due(n, LEASE_SECONDS,
+                                              agent.cfg.get("fill_scan_capacity", False),
+                                              agent.cfg.get("min_scan_seconds", 65))
                 self._activity(f"queue:{n}", len(rows))
                 return self._send(200, {"items": [{"uid": r["uid"], "url": r["url"]} for r in rows]})
+            if u.path == "/scan-report":
+                with agent.lock:
+                    report = agent.scan_tracking.summary(time.time(), limit=100)
+                return self._send(200, report)
             if u.path == "/health":
                 # Used by the desktop keeper's watchdog: seconds since prices last arrived
                 # (counted from agent start if none yet), so it can restart a stalled browser.
@@ -95,6 +101,7 @@ def serve(agent, port):
                                     "confirmed": agent.listing_checks.confirmed,
                                     "ambiguous_skipped": agent.listing_checks.ambiguous}
                     now = time.time()
+                    scans = agent.scan_tracking.summary(now, limit=0)
                     row = agent.db.c.execute(
                         "SELECT COUNT(*) total, COALESCE(SUM(next_check<=?), 0) due, "
                         "MIN(next_check) next_at FROM items", (now,)).fetchone()
@@ -111,7 +118,8 @@ def serve(agent, port):
                                         "state": "blocked" if budget["cooldown_seconds"] else state,
                                         "refreshes_rejected": refreshes_rejected,
                                         "listing_verification": verification,
-                                        "request_budget": budget, "queue": queue, "clients": activity})
+                                        "request_budget": budget, "queue": queue, "clients": activity,
+                                        "scan_tracking": scans})
             self._send(404, {"error": "not found"})
 
         def do_POST(self):
