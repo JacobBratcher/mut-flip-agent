@@ -106,26 +106,39 @@ Files live in `%LOCALAPPDATA%\MUTFlipFeeder`: `extension\` (with `config.json` h
 
 Re-run it any time to update (it remembers the URL and token). Over RDP, **disconnect** when you leave, don't sign out.
 
+**VPN only for the feeder:** in Surfshark Bypasser, enable **Route via VPN** and select only the dedicated Chromium executable shown by the installer. Remove ordinary Chrome and other apps from that selection. Surfshark's native **Rotating IP** and auto-connect can be enabled separately; the feeder still honors shared request permits, refusals, and cooldowns across IP changes. Any other browser using that same Chromium executable would also use the VPN, so reserve it for the feeder.
+
+Some VPN clients block the selected app's LAN access even when the agent IP is excluded. For this case, enable the optional local relay before running the installer:
+
+```powershell
+$env:MUT_FEEDER_LAN_RELAY = '1'
+irm https://raw.githubusercontent.com/JacobBratcher/mut-flip-agent/main/extension/install.ps1 | iex
+```
+
+The browser connects to `127.0.0.1:18099`; a separate PowerShell process forwards only that port to the saved HTTP agent address. It binds only to loopback, has a fixed destination, and never logs traffic or tokens. Keep PowerShell outside the VPN selection. The keeper restarts the relay if it exits. Saved credentials and other settings are retained, and subsequent installer runs preserve relay mode. Set `MUT_FEEDER_LAN_RELAY` to `0` and rerun to restore a direct agent connection. The upstream URL is retained in `relayUpstreamUrl` in the private local `config.json`.
+
 Manual install instead: `chrome://extensions` → Developer mode → **Load unpacked** → `extension/` → Settings → enter the URL and token → Start.
 
 **Tip:** in Discord, set the alert channel's notifications to *All Messages* so alerts buzz your phone instantly.
 
-## Current live setup (Oct 2, 2026)
+## Current live setup (Oct 4, 2026)
 
 What the author's instance actually runs, set in the add-on's Configuration tab (code defaults are described above):
 
 | Setting | Live value | Default |
 |---|---|---|
-| Add-on / feeder | 1.8.1 / extension 1.2.0 | |
-| `requests_per_minute` | 16 | 20 |
-| `min_ovr` | 86 (~238 cards) | 85 |
+| Add-on / feeder | 1.11.1 / extension 1.4.0 | |
+| `requests_per_minute` (planner) | 40 | 20 |
+| `http_requests_per_minute` (adaptive upper bound) | 120; actual budget ramps with successful requests | 16 |
+| `fill_scan_capacity` / `min_scan_seconds` | true / 65 | false / 65 |
+| `min_ovr` | 86 (~241 cards) | 85 |
 | `tiers.hot_min_value` / `hot_min_daily_sales` | 0 / 0 (no hot filter: every card with sales qualifies) | 25,000 / 5 |
-| `tiers.hot_minutes` | 20 | 10 |
+| `tiers.hot_minutes` | 6 | 10 |
 | `tiers.cold_hours` | 1 | 24 |
 | `tiers.fresh_minutes` | 2 | 3 |
 | `tiers.fresh_hours` / `fresh_long_hours` | 168 / 336 | 48 / 168 |
 
-With these, new releases get up to 60% of checks for their first week, and every other card is checked every 20 minutes when the budget allows (hourly otherwise). Home Assistant also has an automation that notifies the phone (and Discord, once its `rest_command` is added to `configuration.yaml`) when `sensor.mut_flip_agent_status` is `waiting for feeder` / `blocked` for 15 minutes, and a dashboard badge on the MUT Market button that counts snipes since it was last tapped (`input_datetime.mut_market_last_seen`, `script.mut_market_mark_seen`). Those live in Home Assistant, not in this repo.
+New releases retain priority for their first week. Hot cards target six minutes when the budget allows; spare capacity revisits the oldest eligible cards. Actual completed scans are reported separately from the adaptive HTTP request budget: refresh retries also consume permits. The dedicated Windows Chromium uses Surfshark's Route via VPN and native Rotating IP; the loopback relay keeps its agent traffic on the LAN. Home Assistant also has an automation that notifies the phone (and Discord, once its `rest_command` is added to `configuration.yaml`) when `sensor.mut_flip_agent_status` is `waiting for feeder` / `blocked` for 15 minutes, and a dashboard badge on the MUT Market button that counts snipes since it was last tapped (`input_datetime.mut_market_last_seen`, `script.mut_market_mark_seen`). Those live in Home Assistant, not in this repo.
 
 ## Home Assistant sensors
 
@@ -149,7 +162,7 @@ docker compose up -d --build
 
 ## If mut.gg blocks requests
 
-It never tries to bypass Cloudflare or rate limits (no proxies or IP rotation). The feeder pauses (backing off up to 15 min, or longer for `Retry-After`) and retries, and Discord gets a warning when the state changes to blocked. If it keeps happening, lower `http_requests_per_minute`, or ask mut.gg for a higher supported limit. Changing a VPN connection does not clear the agent's cooldown.
+The feeder does not rotate IPs itself or reset limits when an external VPN rotates. It pauses on refusals (backing off up to 15 min, or longer for `Retry-After`) and retries, and Discord gets a warning when the state changes to blocked. If it keeps happening, lower `http_requests_per_minute`, or ask mut.gg for a higher supported limit. Changing a VPN connection does not clear the agent's cooldown. The optional loopback relay forwards only local agent traffic; it does not carry mut.gg requests.
 
 ## Debugging
 
