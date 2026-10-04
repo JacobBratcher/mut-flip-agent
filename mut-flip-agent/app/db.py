@@ -1,5 +1,7 @@
 """SQLite storage: items, their sale history, and alert log."""
 import sqlite3
+import threading
+from functools import wraps
 import time
 from datetime import datetime, timezone
 
@@ -43,8 +45,17 @@ def _matches(price, when, known):
     return any(p == price and abs(t - when) <= SAME_SALE_SECONDS for p, t in known)
 
 
+def locked(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+    return call
+
+
 class DB:
     def __init__(self, path):
+        self.lock = threading.RLock()
         self.c = sqlite3.connect(path, check_same_thread=False)
         self.c.row_factory = sqlite3.Row
         self.c.executescript(SCHEMA)
@@ -70,6 +81,7 @@ class DB:
             self.put("sales_deduped", self.dedupe_sales())
 
     # items
+    @locked
     def upsert_item(self, uid, url="", tier=None):
         self.c.execute(
             "INSERT INTO items(uid, url, tier) VALUES(?,?,?) ON CONFLICT(uid) DO UPDATE SET "
@@ -79,15 +91,18 @@ class DB:
             self.c.execute("UPDATE items SET tier=?, next_check=0 WHERE uid=?", (tier, uid))
         self.c.commit()
 
+    @locked
     def item(self, uid):
         return self.c.execute("SELECT * FROM items WHERE uid=?", (uid,)).fetchone()
 
+    @locked
     def next_due(self):
         order = "CASE tier WHEN 'watch' THEN 0 WHEN 'fresh' THEN 0 WHEN 'hot' THEN 1 WHEN 'new' THEN 2 ELSE 3 END"
         return self.c.execute(
             f"SELECT * FROM items WHERE next_check<=? ORDER BY {order}, next_check LIMIT 1",
             (time.time(),)).fetchone()
 
+    @locked
     def lease_due(self, n, lease_seconds, fill_capacity=False, min_scan_seconds=65):
         """Hand out up to n due items and hold them for lease_seconds so they aren't reissued."""
         order = "CASE tier WHEN 'watch' THEN 0 WHEN 'fresh' THEN 0 WHEN 'hot' THEN 1 WHEN 'new' THEN 2 ELSE 3 END"
@@ -109,18 +124,22 @@ class DB:
         self.c.commit()
         return rows
 
+    @locked
     def set_schedule(self, uid, tier, next_check):
         self.c.execute("UPDATE items SET tier=?, next_check=?, last_check=?, lease_until=0 WHERE uid=?",
                        (tier, next_check, time.time(), uid))
         self.c.commit()
 
+    @locked
     def set_score(self, uid, score):
         self.c.execute("UPDATE items SET score=? WHERE uid=?", (score, uid))
         self.c.commit()
 
+    @locked
     def count_tier(self, tier):
         return self.c.execute("SELECT COUNT(*) n FROM items WHERE tier=?", (tier,)).fetchone()["n"]
 
+    @locked
     def demote_hot_beyond(self, keep, next_check):
         rows = self.c.execute("SELECT uid FROM items WHERE tier='hot' ORDER BY score DESC").fetchall()
         extra = [r["uid"] for r in rows[keep:]]
@@ -129,6 +148,7 @@ class DB:
         self.c.commit()
         return len(extra)
 
+    @locked
     def keep_only(self, uids):
         """Drop items (and their sales) that are no longer tracked."""
         keep = set(uids)
@@ -138,10 +158,12 @@ class DB:
         self.c.commit()
         return len(gone)
 
+    @locked
     def set_name(self, uid, name):
         self.c.execute("UPDATE items SET name=? WHERE uid=?", (name, uid))
         self.c.commit()
 
+    @locked
     def mark_seen(self, uids, now, baseline=False):
         """Record when cards first appeared; returns the ones that are new releases.
         baseline: first discovery or a changed OVR filter, so nothing counts as new."""
@@ -152,15 +174,18 @@ class DB:
         self.c.commit()
         return [] if baseline else new
 
+    @locked
     def first_seen(self):
         """{uid: unix time it first appeared} for new releases (cards already out are left out)."""
         return {r["uid"]: r["first_seen"] for r in
                 self.c.execute("SELECT uid, first_seen FROM seen WHERE first_seen > 0")}
 
+    @locked
     def all_items(self):
         return self.c.execute("SELECT * FROM items").fetchall()
 
     # sales
+    @locked
     def add_sales(self, uid, sales):
         """Store a card's sale list and return the sales that weren't stored before.
 
@@ -188,6 +213,7 @@ class DB:
         self.c.commit()
         return sorted(new, key=lambda s: s[1])
 
+    @locked
     def dedupe_sales(self):
         """One-time cleanup of sales stored repeatedly before add_sales replaced spans.
 
@@ -204,11 +230,13 @@ class DB:
         self.c.commit()
         return len(dead)
 
+    @locked
     def sales_since(self, uid, since_ts):
         rows = self.c.execute("SELECT price, sold_at FROM sales WHERE uid=?", (uid,)).fetchall()
         return sorted(((r["price"], ts(r["sold_at"])) for r in rows if ts(r["sold_at"]) >= since_ts),
                       key=lambda x: x[1])
 
+    @locked
     def prune(self, keep_days):
         cutoff = time.time() - keep_days * 86400
         rows = self.c.execute("SELECT rowid, sold_at FROM sales").fetchall()
@@ -217,15 +245,18 @@ class DB:
         self.c.commit()
 
     # alerts
+    @locked
     def last_alert(self, uid, kind):
         r = self.c.execute("SELECT MAX(sent_at) m FROM alerts WHERE uid=? AND kind=?",
                            (uid, kind)).fetchone()
         return r["m"] or 0
 
+    @locked
     def log_alert(self, uid, kind):
         self.c.execute("INSERT INTO alerts VALUES(?,?,?)", (uid, kind, time.time()))
         self.c.commit()
 
+    @locked
     def log_flip(self, uid, name, url, f):
         self.c.execute(
             "INSERT INTO flips (ts, uid, name, url, buy, max_buy, market, profit, roi, falling, ends,"
@@ -237,15 +268,18 @@ class DB:
         self.c.execute("DELETE FROM flips WHERE ts < ?", (time.time() - 7 * 86400,))
         self.c.commit()
 
+    @locked
     def recent_flips(self, hours=24, limit=15):
         return self.c.execute("SELECT * FROM flips WHERE ts >= ? ORDER BY ts DESC LIMIT ?",
                               (time.time() - hours * 3600, limit)).fetchall()
 
     # key/value
+    @locked
     def get(self, k, default=None):
         r = self.c.execute("SELECT v FROM state WHERE k=?", (k,)).fetchone()
         return r["v"] if r else default
 
+    @locked
     def put(self, k, v):
         self.c.execute("INSERT OR REPLACE INTO state VALUES(?,?)", (k, str(v)))
         self.c.commit()

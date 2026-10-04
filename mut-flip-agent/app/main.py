@@ -9,7 +9,7 @@ import requests
 
 from . import analysis, config, market, youtube
 from .client import Blocked, MutGG, normalize_watch, parse_live, parse_price, parse_sales, parse_volume
-from .db import DB
+from .db import DB, locked
 from .ha import HA
 from .notify import Discord
 from .rate_limit import RequestBudget
@@ -46,7 +46,7 @@ class Agent:
         self.listing_checks = ListingChecks()
         self.started = time.time()
         self.feeder_state = ""
-        self.lock = threading.RLock()
+        self.lock = self.db.lock
         self.web = requests.Session()
         self.web.headers["User-Agent"] = "MUT-Flip-Agent (personal market report)"
         self.move = None
@@ -325,6 +325,7 @@ class Agent:
     def promo_events(self):
         return [tuple(x) for x in json.loads(self.db.get("promo_events") or "[]")]
 
+    @locked
     def _record_promos(self, found):
         if self.db.get("promo_backfilled") is None and not self._backfilling:
             # One-time read of recent article pages (slow on purpose), off the main loop.
@@ -500,6 +501,15 @@ class Agent:
         }
         self.ha.publish(state, flips, picks, extra)
 
+    def maintenance(self):
+        # News, Twitch and YouTube can each wait tens of seconds on a network
+        # response. DB methods serialize access individually; never hold the
+        # feeder's lock across the whole reporting/network routine.
+        self.maybe_market()
+        with self.lock:
+            self.maybe_digest()
+            self.publish()
+
     # ----------------------------------------------------------------- loop
     def run(self):
         self.discord.status(f"Started. Watching {self.cfg['platform'].upper()} market "
@@ -515,10 +525,7 @@ class Agent:
                 if sync_due:
                     self.sync_items()
                     last_sync = time.time()
-                with self.lock:
-                    self.maybe_digest()
-                    self.maybe_market()
-                    self.publish()
+                self.maintenance()
                 if self.cfg["fetch_mode"] == "extension":
                     self.upgrade_names()
                     time.sleep(5)

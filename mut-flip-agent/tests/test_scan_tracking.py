@@ -143,3 +143,31 @@ def test_existing_card_gets_early_baseline_without_calling_old_check_success(tmp
     assert db.lease_due(1, 300, False) == []
     assert [r['uid'] for r in db.lease_due(1, 300, True)] == ['27-1']
     assert db.lease_due(1, 300, True) == []
+
+
+def test_reporting_network_wait_does_not_block_feeder(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    monkeypatch.setenv('DATA_DIR', str(tmp_path))
+    agent = main.Agent(DEFAULTS | {'discord_webhook_url': 'x', 'feeder_token': 'secret'})
+    entered, release = threading.Event(), threading.Event()
+    def slow_report():
+        entered.set()
+        release.wait(5)
+    agent.maybe_market = slow_report
+    agent.maybe_digest = lambda: None
+    agent.publish = lambda: None
+    agent.db.upsert_item('27-1')
+    httpd = feeder.serve(agent, 0)
+    thread = threading.Thread(target=agent.maintenance)
+    thread.start()
+    try:
+        assert entered.wait(1)
+        with ThreadPoolExecutor() as pool:
+            future = pool.submit(call, httpd.server_address[1], 'GET', '/queue?n=1')
+            assert future.result(timeout=1)[1]['items'][0]['uid'] == '27-1'
+            assert call(httpd.server_address[1], 'GET', '/health')[0] == 200
+    finally:
+        release.set()
+        thread.join(2)
+        httpd.shutdown()
