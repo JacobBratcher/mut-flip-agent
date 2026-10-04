@@ -207,11 +207,15 @@ try { $cfg = [IO.File]::ReadAllText((Join-Path $here 'extension\config.json')) |
 $STALE = 600; $GRACE = 600
 $launched = Get-Date; $lastRestart = [datetime]::MinValue; $nextHealth = (Get-Date).AddSeconds(60)
 $pids = @(); $nextScan = 0
-$relayProcess = $null
+$relayScript = Join-Path $here 'extension\agent-relay.ps1'
+# A keeper restart can leave its healthy relay alive; adopt that process instead
+# of launching a duplicate every scan (the relay's mutex rejects duplicates).
+$relayProcess = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+    Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*-File*' -and $_.CommandLine.Contains($relayScript) } |
+    Select-Object -First 1 | ForEach-Object { Get-Process -Id $_.ProcessId }
 while ($true) {
     if ((Get-Date).Ticks -ge $nextScan) {
         if ($cfg.relayUpstreamUrl -and (-not $relayProcess -or $relayProcess.HasExited)) {
-            $relayScript = Join-Path $here 'extension\agent-relay.ps1'
             $relayProcess = Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$relayScript`"") -WindowStyle Hidden -PassThru
         }
         $pids = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" |
