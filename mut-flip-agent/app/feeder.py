@@ -131,6 +131,9 @@ def serve(agent, port):
             if not isinstance(body, dict):
                 return self._send(400, {"error": "object required"})
             # Independent of agent.lock: discovery may hold it while waiting for a slot.
+            if u.path == "/request-budget/relearn":
+                agent.api.budget.relearn()
+                return self._send(200, agent.api.budget.snapshot())
             if u.path == "/request-permit":
                 self._activity("request-permit")
                 return self._send(200, agent.api.budget.acquire())

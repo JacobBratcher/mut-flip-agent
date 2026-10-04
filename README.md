@@ -127,9 +127,9 @@ What the author's instance actually runs, set in the add-on's Configuration tab 
 
 | Setting | Live value | Default |
 |---|---|---|
-| Add-on / feeder | 1.11.1 / extension 1.4.0 | |
+| Add-on / feeder | 1.11.2 / extension 1.4.0 | |
 | `requests_per_minute` (planner) | 40 | 20 |
-| `http_requests_per_minute` (adaptive upper bound) | 120; actual budget ramps with successful requests | 16 |
+| `http_requests_per_minute` (adaptive upper bound) | 120; actual budget ramps with successful requests | 40 |
 | `fill_scan_capacity` / `min_scan_seconds` | true / 65 | false / 65 |
 | `min_ovr` | 86 (~241 cards) | 85 |
 | `tiers.hot_min_value` / `hot_min_daily_sales` | 0 / 0 (no hot filter: every card with sales qualifies) | 25,000 / 5 |
@@ -163,6 +163,8 @@ docker compose up -d --build
 ## If mut.gg blocks requests
 
 The feeder does not rotate IPs itself or reset limits when an external VPN rotates. It pauses on refusals (backing off up to 15 min, or longer for `Retry-After`) and retries, and Discord gets a warning when the state changes to blocked. If it keeps happening, lower `http_requests_per_minute`, or ask mut.gg for a higher supported limit. Changing a VPN connection does not clear the agent's cooldown. The optional loopback relay forwards only local agent traffic; it does not carry mut.gg requests.
+
+After repairing a connection/session problem, an operator can send an authenticated `POST /request-budget/relearn` with an empty JSON object to let the limiter gradually relearn capacity. This restores only the target ceiling: current pace, request spacing, cooldown, and escalating backoff remain unchanged and survive restarts. New successful traffic is still required to increase the pace. The feeder never calls this endpoint automatically or on IP rotation.
 
 ## Debugging
 

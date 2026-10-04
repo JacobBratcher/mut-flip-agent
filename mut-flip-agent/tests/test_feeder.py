@@ -52,6 +52,14 @@ def test_feeder_flow(tmp_path, monkeypatch):
         assert call(port, "POST", "/request-result", {"status": "429"})[0] == 400
         assert call(port, "POST", "/request-result", {"status": 429, "retry_after": "7200"})[1]["wait_ms"] > 7199000
         assert call(port, "POST", "/request-permit", {})[1]["blocked"]
+        learned = agent.api.budget.target
+        pace = agent.api.budget.rate
+        assert call(port, "POST", "/request-budget/relearn", {}, token="nope")[0] == 401
+        assert agent.api.budget.target == learned
+        code, relearn = call(port, "POST", "/request-budget/relearn", {})
+        assert code == 200 and relearn['learned_ceiling'] == relearn['ceiling']
+        assert relearn['rpm'] == pace
+        assert relearn['cooldown_seconds'] > 7199
         code, q = call(port, "GET", "/queue?n=5")
         assert code == 200 and [i["uid"] for i in q["items"]] == ["27-1"]
         assert call(port, "GET", "/queue?n=5")[1]["items"] == []      # leased, not reissued

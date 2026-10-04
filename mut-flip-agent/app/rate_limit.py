@@ -96,6 +96,14 @@ class RequestBudget:
             return {"wait_ms": max(0, math.ceil((self.blocked_until - now) * 1000)),
                     "rpm": self.rate}
 
+    def relearn(self):
+        """Operator recovery after a repair; never reset pace, spacing or cooldown."""
+        with self.lock:
+            self.target = self.ceiling
+            self.successes = 0
+            self.changed_at = self.clock()
+            self._save()
+
     def snapshot(self):
         with self.lock:
             return {"rpm": self.rate, "ceiling": self.ceiling, "learned_ceiling": self.target,
