@@ -12,6 +12,10 @@ DEVICE = {"identifiers": [PREFIX], "name": "MUT Flip Agent", "manufacturer": "mu
           "model": "Price agent", "sw_version": os.environ.get("BUILD_VERSION", "")}
 
 SENSORS = [
+    ("likely_missed_24h", "Likely missed snipes 24h", "mdi:timer-alert-outline",
+     {"state_class": "measurement", "json_attributes_topic": f"{PREFIX}/scan_tracking"}),
+    ("completed_scans_per_minute", "Completed scans per minute", "mdi:speedometer",
+     {"state_class": "measurement", "unit_of_measurement": "scans/min"}),
     # key, name, icon, extra
     ("status", "Status", "mdi:swap-horizontal-circle", {}),
     ("cards_tracked", "Cards tracked", "mdi:cards-outline", {"state_class": "measurement"}),

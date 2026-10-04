@@ -14,6 +14,7 @@ from .ha import HA
 from .notify import Discord
 from .rate_limit import RequestBudget
 from .listing_checks import ListingChecks
+from .scan_tracking import ScanTracking
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("agent")
@@ -27,6 +28,7 @@ class Agent:
         self.api = MutGG(cfg, RequestBudget(cfg.get("http_requests_per_minute", 40),
                                            config.data_dir() / "request-budget.json"))
         self.db = DB(config.data_dir() / "mut.db")
+        self.scan_tracking = ScanTracking(self.db)
         self.discord = Discord(cfg["discord_webhook_url"])
         self.tax = cfg["tax_rate"]
         self.backoff = 0
@@ -154,6 +156,8 @@ class Agent:
         if data.get("updating"):
             self.refreshes_rejected += 1
             self.db.set_schedule(uid, row["tier"], now + 60)
+            self.db.c.execute("UPDATE items SET lease_until=? WHERE uid=?", (now + 60, uid))
+            self.db.c.commit()
             return False
         self.status = "running"
         self.last_ingest = now
@@ -164,6 +168,8 @@ class Agent:
         new = self.db.add_sales(uid, parse_sales(data))
         history = self.db.sales_since(uid, now - self.cfg["flip"]["lookback_hours"] * 3600)
         listings = parse_live(data)
+        self.scan_tracking.record(row, new, history, listings, parse_volume(data),
+                                  parse_price(data), self.cfg, now)
         signal = analysis.flip_signal(new, history, self.cfg, self.tax, now, listings)
         cooldown = self.cfg["flip"]["alert_cooldown_hours"] * 3600
         # A listing we already alerted on that then sells shows up as a "cheap sale";
@@ -447,7 +453,10 @@ class Agent:
                 status = "waiting for feeder"
             else:
                 status = "running"
+        scans = self.scan_tracking.summary(now)
         state = {
+            "likely_missed_24h": scans["likely_missed_24h"],
+            "completed_scans_per_minute": scans["completed_checks_per_minute_5m"],
             "status": status,
             "cards_tracked": len(self.db.all_items()),
             "hot_cards": self.db.count_tier("hot"),
@@ -463,6 +472,7 @@ class Agent:
             "latest_video": (self.videos[0].title[:250] if self.videos else None),
         }
         extra = {
+            "scan_tracking": scans,
             "market": {
                 "fallers": [_mover(x) for x in (self.move.fallers if self.move else [])],
                 "risers": [_mover(x) for x in (self.move.risers if self.move else [])],
@@ -514,7 +524,9 @@ class Agent:
                     time.sleep(5)
                     continue
                 with self.lock:
-                    row = self.db.next_due()
+                    rows = self.db.lease_due(1, 300, self.cfg.get("fill_scan_capacity", False),
+                                             self.cfg.get("min_scan_seconds", 65))
+                    row = rows[0] if rows else None
                 if not row:
                     time.sleep(15)
                     continue

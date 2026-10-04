@@ -17,6 +17,8 @@ DEFAULTS = {
     "api_token_header": "Authorization",
     "requests_per_minute": 20,
     "http_requests_per_minute": 40,
+    "fill_scan_capacity": False,
+    "min_scan_seconds": 65,
     "watchlist": [],
     "discover_all_players": True,
     "min_ovr": 85,

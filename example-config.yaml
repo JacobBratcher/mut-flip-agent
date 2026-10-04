@@ -4,6 +4,8 @@ game: "27"
 fetch_mode: extension            # extension (Chrome feeder) or direct (plain HTTP)
 feeder_token: change-me          # shared secret with the Chrome extension
 api_token_header: Authorization   # change if mut.gg told you a different header
+fill_scan_capacity: true          # use idle capacity for oldest completed snapshots
+min_scan_seconds: 65              # avoid repeatedly reading the same source cache
 requests_per_minute: 20           # card checks/minute used to plan tier intervals
 http_requests_per_minute: 40      # shared HTTP ceiling, including retries/discovery; not a guaranteed allowance
 watchlist:
