@@ -12,12 +12,18 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
 
 $AgentUrl = $env:MUT_AGENT_URL
 $Token = $env:MUT_FEEDER_TOKEN
+$useRelay = $env:MUT_FEEDER_LAN_RELAY -eq '1'
 # Re-running? Reuse the URL and token from the last install.
 $saved = Join-Path $ext 'config.json'
-if ((-not $AgentUrl -or -not $Token) -and (Test-Path $saved)) {
+$old = $null
+if (Test-Path $saved) {
     try {
         $old = [IO.File]::ReadAllText($saved) | ConvertFrom-Json
-        if (-not $AgentUrl) { $AgentUrl = $old.agentUrl }
+        if (-not $env:MUT_FEEDER_LAN_RELAY) { $useRelay = [bool]$old.relayUpstreamUrl }
+        if (-not $AgentUrl) {
+            $AgentUrl = $old.agentUrl
+            if ($old.relayUpstreamUrl) { $AgentUrl = $old.relayUpstreamUrl }
+        }
         if (-not $Token) { $Token = $old.token }
         Write-Host "Using saved agent URL $AgentUrl"
     } catch { }
@@ -29,6 +35,9 @@ if ($AgentUrl -notmatch '^https?://') { $AgentUrl = "http://$AgentUrl" }
 $uri = [Uri]$AgentUrl
 if (-not $uri.IsDefaultPort -or $AgentUrl -match ':\d+$') { } else { $AgentUrl = "$AgentUrl`:8099"; $uri = [Uri]$AgentUrl }
 $origin = $uri.GetLeftPart([UriPartial]::Authority) + '/*'
+if ($useRelay -and ($uri.Scheme -ne 'http' -or $uri.UserInfo -or $uri.AbsolutePath -ne '/' -or $uri.Query -or $uri.Fragment)) {
+    throw 'The optional LAN relay requires an HTTP agent URL without a path, query, or embedded credentials.'
+}
 
 # 1. Check the agent is reachable before doing anything else.
 Write-Host "Checking agent at $AgentUrl ..."
@@ -104,7 +113,17 @@ Copy-Item $srcExt.FullName $ext -Recurse
 Remove-Item $zip, $src -Recurse -Force -ErrorAction SilentlyContinue
 
 # 5. Pre-configure it: agent URL + token, auto-start, and permission to reach the agent.
-$config = @{ agentUrl = $AgentUrl; token = $Token; autostart = $true } | ConvertTo-Json
+$settings = @{}
+if ($old) { foreach ($property in $old.PSObject.Properties) { $settings[$property.Name] = $property.Value } }
+$settings.agentUrl = $AgentUrl
+$settings.token = $Token
+$settings.autostart = $true
+if ($useRelay) {
+    $settings.relayUpstreamUrl = $AgentUrl
+    $settings.agentUrl = 'http://127.0.0.1:18099'
+    $origin = 'http://127.0.0.1:18099/*'
+} else { $settings.Remove('relayUpstreamUrl') }
+$config = $settings | ConvertTo-Json -Depth 10
 [IO.File]::WriteAllText((Join-Path $ext 'config.json'), $config, $utf8)
 $manifestPath = Join-Path $ext 'manifest.json'
 $manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
@@ -188,8 +207,13 @@ try { $cfg = [IO.File]::ReadAllText((Join-Path $here 'extension\config.json')) |
 $STALE = 600; $GRACE = 600
 $launched = Get-Date; $lastRestart = [datetime]::MinValue; $nextHealth = (Get-Date).AddSeconds(60)
 $pids = @(); $nextScan = 0
+$relayProcess = $null
 while ($true) {
     if ((Get-Date).Ticks -ge $nextScan) {
+        if ($cfg.relayUpstreamUrl -and (-not $relayProcess -or $relayProcess.HasExited)) {
+            $relayScript = Join-Path $here 'extension\agent-relay.ps1'
+            $relayProcess = Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$relayScript`"") -WindowStyle Hidden -PassThru
+        }
         $pids = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" |
             Where-Object { $_.CommandLine -like '*MUTFlipFeeder*' } | ForEach-Object { [uint32]$_.ProcessId })
         if (-not $pids.Count) {

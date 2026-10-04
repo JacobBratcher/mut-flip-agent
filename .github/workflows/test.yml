@@ -26,6 +26,13 @@ jobs:
         run: |
           $tokens = $null
           $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $PWD 'extension/install.ps1'), [ref]$tokens, [ref]$parseErrors) | Out-Null
-          if ($parseErrors.Count) { $parseErrors | Format-List; exit 1 }
+          foreach ($file in @('extension/install.ps1', 'extension/agent-relay.ps1')) {
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $file), [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count) { $parseErrors | Format-List; exit 1 }
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test loopback agent relay on Windows
+        run: python -m unittest discover -s extension/tests -p 'test_*.py' -v
