@@ -114,6 +114,26 @@ def test_recovery_stays_below_a_previously_refused_rate_after_restart(tmp_path):
     assert budget.snapshot()["learned_ceiling"] == pytest.approx(28.8)
 
 
+def test_operator_relearning_preserves_pacing_cooldown_and_backoff(tmp_path):
+    clock = Clock()
+    path = tmp_path / 'budget.json'
+    budget = RequestBudget(120, path, clock)
+    budget.acquire()
+    budget.record(403, '7200')
+    before = (budget.rate, budget.next_at, budget.blocked_until, budget.backoff)
+    budget.relearn()
+    budget = RequestBudget(120, path, clock)
+    assert (budget.rate, budget.next_at, budget.blocked_until, budget.backoff) == before
+    assert budget.target == 120
+    assert budget.acquire()['wait_ms'] == 7200000
+    clock.now += 7200
+    assert budget.acquire()['allowed']
+    assert not budget.acquire()['allowed']
+    for _ in range(20):
+        budget.record(200)
+    assert budget.rate == before[0] + 1
+
+
 @pytest.mark.parametrize("value", [None, "bad", "NaN", "inf", "-1", [], {}])
 def test_invalid_retry_headers(value):
     assert retry_seconds(value, 1_800_000_000) == 0
