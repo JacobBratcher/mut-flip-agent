@@ -137,6 +137,13 @@ async function checkOne(tab, it, cfg) {
     const feedback = await agent("POST", "/request-result", {
       status: Math.max(0, res?.status || 0), retry_after: res?.retry_after,
     });
+    if (res && res.status !== 200) {
+      // Allowlisted metadata only: no response bodies, URLs, cookies or tokens.
+      await set({ lastFailure: { at: Date.now(), uid: it.uid, status: res.status,
+        httpStatus: res.http_status || 0,
+        responseKind: ["json", "html", "other"].includes(res.response_kind) ? res.response_kind : "unknown",
+        challenged: res.challenged === true, redirected: res.redirected === true } });
+    }
     if (res && BLOCK_CODES.has(res.status)) return { kind: "blocked", res,
       wait_ms: Math.max(60000, feedback.wait_ms) };
     if (!res || res.status !== 200 || !res.data?.updating) break;

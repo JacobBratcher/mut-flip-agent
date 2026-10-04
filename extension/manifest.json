@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MUT Flip Feeder",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Feeds mut.gg prices from your own browser to your MUT Flip Agent on Home Assistant.",
   "permissions": [
     "storage",
