@@ -127,7 +127,7 @@ What the author's instance actually runs, set in the add-on's Configuration tab 
 
 | Setting | Live value | Default |
 |---|---|---|
-| Add-on / feeder | 1.11.2 / extension 1.4.0 | |
+| Add-on / feeder | 1.11.3 / extension 1.4.0 | |
 | `requests_per_minute` (planner) | 40 | 20 |
 | `http_requests_per_minute` (adaptive upper bound) | 120; actual budget ramps with successful requests | 40 |
 | `fill_scan_capacity` / `min_scan_seconds` | true / 65 | false / 65 |
@@ -137,6 +137,8 @@ What the author's instance actually runs, set in the add-on's Configuration tab 
 | `tiers.cold_hours` | 1 | 24 |
 | `tiers.fresh_minutes` | 2 | 3 |
 | `tiers.fresh_hours` / `fresh_long_hours` | 168 / 336 | 48 / 168 |
+
+The browser queue uses three priority leases followed by two oldest-overdue leases. This 60/40 allocation persists across single-card requests and restarts, so a reduced HTTP budget cannot indefinitely starve older cards behind constantly due fresh releases. Outstanding card leases still prevent duplicate concurrent scans.
 
 New releases retain priority for their first week. Hot cards target six minutes when the budget allows; spare capacity revisits the oldest eligible cards. Actual completed scans are reported separately from the adaptive HTTP request budget: refresh retries also consume permits. The dedicated Windows Chromium uses Surfshark's Route via VPN; the loopback relay keeps its agent traffic on the LAN. Native Rotating IP was tested and then disabled after repeated HTTP 403 responses. A stable VPN exit and a normal browser-session refresh ran for over four hours without another refusal; auto-connect remains enabled. Home Assistant also has an automation that notifies the phone (and Discord, once its `rest_command` is added to `configuration.yaml`) when `sensor.mut_flip_agent_status` is `waiting for feeder` / `blocked` for 15 minutes, and a dashboard badge on the MUT Market button that counts snipes since it was last tapped (`input_datetime.mut_market_last_seen`, `script.mut_market_mark_seen`). Those live in Home Assistant, not in this repo.
 

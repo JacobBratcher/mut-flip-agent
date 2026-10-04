@@ -17,6 +17,37 @@ def setup(tmp_path):
     return db, ScanTracking(db), deepcopy(DEFAULTS)
 
 
+def test_single_card_requests_cannot_starve_overdue_cards(tmp_path, monkeypatch):
+    monkeypatch.setattr('app.db.time.time', lambda: NOW)
+    path = tmp_path / 'fair.db'
+    db = DB(path)
+    for uid, tier in [('fresh', 'fresh'), ('old-a', 'cold'), ('old-b', 'new')]:
+        db.upsert_item(uid, tier=tier)
+        db.set_schedule(uid, tier, NOW - (1 if uid == 'fresh' else 3600))
+    leased = []
+    for i in range(5):
+        row = db.lease_due(1, 300)[0]
+        leased.append(row['uid'])
+        if row['uid'] == 'fresh':
+            db.set_schedule('fresh', 'fresh', NOW - 1)  # always due, as under a low budget
+        if i == 1:
+            db.c.close()
+            db = DB(path)  # fairness survives keeper/server restarts
+    assert leased == ['fresh', 'fresh', 'fresh', 'old-b', 'old-a']
+    assert db.item('old-a')['lease_until'] == NOW + 300
+    assert db.item('old-b')['lease_until'] == NOW + 300
+
+
+def test_fair_batch_leases_are_unique(tmp_path, monkeypatch):
+    monkeypatch.setattr('app.db.time.time', lambda: NOW)
+    db = DB(tmp_path / 'batch.db')
+    for uid in range(8):
+        db.upsert_item(str(uid), tier='fresh' if uid < 4 else 'cold')
+    rows = db.lease_due(8, 300)
+    assert len(rows) == len({row['uid'] for row in rows}) == 8
+    assert db.lease_due(8, 300) == []
+
+
 def record(db, tracker, cfg, now, new=(), listings=(), history=None):
     tracker.record(db.item('27-1'), new, history or HISTORY, listings, 10, 500_000, cfg, now)
 
