@@ -23,7 +23,7 @@ function background(responses, overrides = {}) {
       } },
       alarms: { create: noop, onAlarm: event },
       runtime: { onStartup: event, onInstalled: event, onMessage: event,
-                 getManifest: () => ({ version: '1.4.0' }) },
+                 getManifest: () => ({ version: '1.4.1' }) },
       tabs: { sendMessage: async () => { calls.push('mut.gg'); return responses.shift(); } },
     },
     fetch: async (url, options) => {
@@ -52,7 +52,7 @@ test('every refresh retry obtains a permit and reports its result before ingest'
   ]);
   assert.equal(fixture.storage.stats.requests, 2);
   assert.equal(fixture.storage.stats.checks, 1);
-  assert.ok(fixture.calls.filter(c => c.endpoint).every(c => c.version === '1.4.0'));
+  assert.ok(fixture.calls.filter(c => c.endpoint).every(c => c.version === '1.4.1'));
 });
 
 test('exhausted updating responses never count as fresh checks', async () => {
@@ -97,4 +97,36 @@ test('content script makes exactly one request even while prices are updating', 
   vm.runInContext(readFileSync(path.join(__dirname, '../content.js'), 'utf8'), context);
   assert.equal((await vm.runInContext("fetchPrices('27-1', 'pc')", context)).data.updating, true);
   assert.equal(requests, 1);
+});
+
+test('failure diagnostics preserve actual HTTP status without reading response bodies', async () => {
+  for (const [status, type, challenge] of [[200, 'text/html', true], [403, 'application/json', false]]) {
+    const context = vm.createContext({
+      AbortSignal,
+      chrome: { runtime: { onMessage: { addListener: () => {} } } },
+      fetch: async () => ({ status, ok: status === 200, redirected: true,
+        headers: { get: name => ({ 'content-type': type, 'cf-mitigated': challenge ? 'challenge' : null })[name] },
+        text: () => { throw new Error('must not read private response body'); },
+      }),
+    });
+    vm.runInContext(readFileSync(path.join(__dirname, '../content.js'), 'utf8'), context);
+    const result = await vm.runInContext("fetchPrices('27-1', 'pc')", context);
+    assert.equal(result.status, 403);
+    assert.equal(result.http_status, status);
+    assert.equal(result.response_kind, type.split('/')[1]);
+    assert.equal(result.challenged, challenge);
+    assert.equal(result.redirected, true);
+  }
+});
+
+test('stored failure metadata excludes raw details and credentials, while keeping refusal cooldown', async () => {
+  const fixture = background([{ status: 429, http_status: 429, response_kind: 'html', challenged: true,
+    detail: 'private body', token: 'private token', redirected: false }]);
+  const result = await fixture.run();
+  assert.equal(result.kind, 'blocked');
+  assert.equal(result.wait_ms, 7200000);
+  assert.deepEqual(fixture.storage.lastFailure, {
+    at: 1800000000000, uid: '27-1', status: 429, httpStatus: 429,
+    responseKind: 'html', challenged: true, redirected: false,
+  });
 });

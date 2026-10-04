@@ -8,8 +8,13 @@ async function fetchPrices(uid, platform) {
                                 signal: AbortSignal.timeout(20000) });
   const type = r.headers.get("content-type") || "";
   if (!r.ok || !type.includes("json")) {
+    // Keep enough metadata to distinguish a rejected API call from a successful
+    // HTTP response containing a challenge/login page. Never retain page bodies.
+    const response_kind = type.includes("json") ? "json" : type.includes("html") ? "html" : "other";
+    const challenged = r.headers.get("cf-mitigated") === "challenge";
     return { status: r.ok ? 403 : r.status, retry_after: r.headers.get("Retry-After"),
-             detail: (await r.text()).slice(0, 120) };
+             http_status: r.status, response_kind, challenged, redirected: !!r.redirected,
+             detail: `HTTP ${r.status} (${response_kind}${challenged ? ", challenge" : ""})` };
   }
   const body = await r.json();
   return { status: 200, data: body && body.data };

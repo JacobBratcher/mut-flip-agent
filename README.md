@@ -127,7 +127,7 @@ What the author's instance actually runs, set in the add-on's Configuration tab 
 
 | Setting | Live value | Default |
 |---|---|---|
-| Add-on / feeder | 1.11.3 / extension 1.4.0 | |
+| Add-on / feeder | 1.11.3 / extension 1.4.1 | |
 | `requests_per_minute` (planner) | 40 | 20 |
 | `http_requests_per_minute` (adaptive upper bound) | 120; actual budget ramps with successful requests | 40 |
 | `fill_scan_capacity` / `min_scan_seconds` | true / 65 | false / 65 |
