@@ -106,7 +106,7 @@ Files live in `%LOCALAPPDATA%\MUTFlipFeeder`: `extension\` (with `config.json` h
 
 Re-run it any time to update (it remembers the URL and token). Over RDP, **disconnect** when you leave, don't sign out.
 
-**VPN only for the feeder:** in Surfshark Bypasser, enable **Route via VPN** and select only the dedicated Chromium executable shown by the installer. Remove ordinary Chrome and other apps from that selection. Surfshark's native **Rotating IP** and auto-connect can be enabled separately; the feeder still honors shared request permits, refusals, and cooldowns across IP changes. Any other browser using that same Chromium executable would also use the VPN, so reserve it for the feeder.
+**VPN only for the feeder:** in Surfshark Bypasser, enable **Route via VPN** and select only the dedicated Chromium executable shown by the installer. Remove ordinary Chrome and other apps from that selection. Keep **Rotating IP off** for unattended scanning: changing exit IPs can interrupt the browser session with another challenge. Auto-connect can remain enabled. The feeder honors shared request permits, refusals, and cooldowns across connection changes. Any other browser using that same Chromium executable would also use the VPN, so reserve it for the feeder.
 
 Some VPN clients block the selected app's LAN access even when the agent IP is excluded. For this case, enable the optional local relay before running the installer:
 
@@ -121,7 +121,7 @@ Manual install instead: `chrome://extensions` → Developer mode → **Load unpa
 
 **Tip:** in Discord, set the alert channel's notifications to *All Messages* so alerts buzz your phone instantly.
 
-## Current live setup (Oct 4, 2026)
+## Current live setup (Oct 5, 2026)
 
 What the author's instance actually runs, set in the add-on's Configuration tab (code defaults are described above):
 
@@ -131,7 +131,7 @@ What the author's instance actually runs, set in the add-on's Configuration tab 
 | `requests_per_minute` (planner) | 40 | 20 |
 | `http_requests_per_minute` (adaptive upper bound) | 120; actual budget ramps with successful requests | 40 |
 | `fill_scan_capacity` / `min_scan_seconds` | true / 65 | false / 65 |
-| `min_ovr` | 86 (~241 cards) | 85 |
+| `min_ovr` | 88 (89 cards at the last discovery) | 85 |
 | `tiers.hot_min_value` / `hot_min_daily_sales` | 0 / 0 (no hot filter: every card with sales qualifies) | 25,000 / 5 |
 | `tiers.hot_minutes` | 6 | 10 |
 | `tiers.cold_hours` | 1 | 24 |
@@ -140,7 +140,9 @@ What the author's instance actually runs, set in the add-on's Configuration tab 
 
 The browser queue uses three priority leases followed by two oldest-overdue leases. This 60/40 allocation persists across single-card requests and restarts, so a reduced HTTP budget cannot indefinitely starve older cards behind constantly due fresh releases. Outstanding card leases still prevent duplicate concurrent scans.
 
-New releases retain priority for their first week. Hot cards target six minutes when the budget allows; spare capacity revisits the oldest eligible cards. Actual completed scans are reported separately from the adaptive HTTP request budget: refresh retries also consume permits. The dedicated Windows Chromium uses Surfshark's Route via VPN; the loopback relay keeps its agent traffic on the LAN. Native Rotating IP was tested and then disabled after repeated HTTP 403 responses. A stable VPN exit and a normal browser-session refresh ran for over four hours without another refusal; auto-connect remains enabled. Home Assistant also has an automation that notifies the phone (and Discord, once its `rest_command` is added to `configuration.yaml`) when `sensor.mut_flip_agent_status` is `waiting for feeder` / `blocked` for 15 minutes, and a dashboard badge on the MUT Market button that counts snipes since it was last tapped (`input_datetime.mut_market_last_seen`, `script.mut_market_mark_seen`). Those live in Home Assistant, not in this repo.
+New releases retain priority for their first week. Hot cards target six minutes when the budget allows; spare capacity revisits the oldest eligible cards. Actual completed scans are reported separately from the adaptive HTTP request budget: refresh retries also consume permits. Narrowing discovery from 86+ to 88+ removed 155 lower-rated cards from the live queue, concentrating the same shared budget on 89 cards. Capacity can recover gradually after a connection repair using the authenticated operator endpoint below; increasing the configured ceiling alone does not erase a learned limit or a cooldown.
+
+The dedicated Windows Chromium uses Surfshark's Route via VPN; the loopback relay keeps its agent traffic on the LAN. Native Rotating IP was tested and disabled after repeated refusals. Rotation is not required by the feeder, and keeping it off does not guarantee that the site will never issue another challenge. Home Assistant also has an automation that notifies the phone (and Discord, once its `rest_command` is added to `configuration.yaml`) when `sensor.mut_flip_agent_status` is `waiting for feeder` / `blocked` for 15 minutes, and a dashboard badge on the MUT Market button that counts snipes since it was last tapped (`input_datetime.mut_market_last_seen`, `script.mut_market_mark_seen`). Those live in Home Assistant, not in this repo.
 
 ## Home Assistant sensors
 
