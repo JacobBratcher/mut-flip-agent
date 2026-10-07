@@ -20,12 +20,16 @@ def retry_seconds(value, now=None):
 
 
 class RequestBudget:
-    def __init__(self, ceiling, path=None, clock=time.time):
+    def __init__(self, ceiling, path=None, clock=time.time, worker_ceiling=16):
         self.ceiling = max(1, float(ceiling))
         self.target = self.ceiling
         self.floor = 1
         self.clock, self.path = clock, path
         self.lock = threading.Lock()
+        self.worker_ceiling = max(1, float(worker_ceiling))
+        self.worker_next = {}
+        self.transient_failures = []
+        self.network_slowdowns = 0
         self.rate = min(32, self.ceiling)
         self.next_at = self.blocked_until = self.backoff = 0
         self.changed_at = clock()
@@ -37,6 +41,12 @@ class RequestBudget:
                 if not math.isfinite(value):
                     raise ValueError(f"Invalid persisted request budget: {key}")
                 setattr(self, key, value)
+            for key, value in saved.get("worker_next", {}).items():
+                value = float(value)
+                if not math.isfinite(value):
+                    raise ValueError("Invalid persisted worker pacing")
+                if value > clock():
+                    self.worker_next[key] = value
             # Before any refusal, target is only the old configured ceiling, not
             # a learned limit. Allow a raised configuration to take effect while
             # retaining the current pace and its gradual recovery.
@@ -49,24 +59,29 @@ class RequestBudget:
         if self.path:
             saved = {k: getattr(self, k) for k in
                      ("rate", "target", "next_at", "blocked_until", "backoff", "changed_at")}
+            saved["worker_next"] = self.worker_next
             temp = self.path.with_suffix(".tmp")
             temp.write_text(json.dumps(saved))
             temp.replace(self.path)
 
-    def acquire(self):
+    def acquire(self, worker_id=None):
         """Nonblocking: callers wait and ask again; no burst tokens accumulate."""
         with self.lock:
             now = self.clock()
-            wait = max(self.next_at, self.blocked_until) - now
+            self.worker_next = {k: v for k, v in self.worker_next.items() if v > now}
+            wait = max(self.next_at, self.blocked_until,
+                       self.worker_next.get(worker_id, 0)) - now
             result = {"allowed": wait <= 0, "wait_ms": max(0, math.ceil(wait * 1000)),
                       "blocked": self.blocked_until > now, "rpm": self.rate}
             if wait <= 0:
                 self.next_at = now + 60 / self.rate
+                if worker_id is not None:
+                    self.worker_next[worker_id] = now + 60 / self.worker_ceiling
                 self.requests += 1
                 self._save()
             return result
 
-    def record(self, status, retry_after=None):
+    def record(self, status, retry_after=None, outcome="http"):
         with self.lock:
             now = self.clock()
             if status in (403, 429, 503):
@@ -82,6 +97,20 @@ class RequestBudget:
                 self.blocked_until = max(self.blocked_until, now + retry_seconds(retry_after, now))
                 self.successes = 0
                 self.changed_at = now
+                self._save()
+            elif outcome in ("timeout", "network_error") or status in (0, 500, 502, 504):
+                # A single slow request need not stop healthy workers. Repeated
+                # failures must not let unattended traffic keep ramping upward.
+                self.successes = 0
+                self.changed_at = now
+                self.transient_failures = [t for t in self.transient_failures if t >= now - 60]
+                self.transient_failures.append(now)
+                if len(self.transient_failures) >= 3 and now >= self.blocked_until:
+                    self.network_slowdowns += 1
+                    self.target = max(self.floor, min(self.target, self.rate * 0.9))
+                    self.rate = max(self.floor, self.rate * 0.75)
+                    self.blocked_until = now + 60
+                    self.transient_failures.clear()
                 self._save()
             elif 200 <= status < 300 and now >= self.blocked_until:
                 self.successes += 1
@@ -109,4 +138,6 @@ class RequestBudget:
             return {"rpm": self.rate, "ceiling": self.ceiling, "learned_ceiling": self.target,
                     "requests": self.requests,
                     "refusals": self.refusals,
+                    "worker_ceiling": self.worker_ceiling,
+                    "network_slowdowns": self.network_slowdowns,
                     "cooldown_seconds": max(0, math.ceil(self.blocked_until - self.clock()))}

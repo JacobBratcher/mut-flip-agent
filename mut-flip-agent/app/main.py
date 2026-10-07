@@ -26,7 +26,8 @@ class Agent:
     def __init__(self, cfg):
         self.cfg = cfg
         self.api = MutGG(cfg, RequestBudget(cfg.get("http_requests_per_minute", 40),
-                                           config.data_dir() / "request-budget.json"))
+                                           config.data_dir() / "request-budget.json",
+                                           worker_ceiling=cfg.get("worker_requests_per_minute", 16)))
         self.db = DB(config.data_dir() / "mut.db")
         self.scan_tracking = ScanTracking(self.db)
         self.discord = Discord(cfg["discord_webhook_url"])

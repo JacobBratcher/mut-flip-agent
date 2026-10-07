@@ -165,3 +165,70 @@ def test_discovery_refusal_stops_browser_requests(monkeypatch):
         client.get("https://www.mut.gg/sitemap-news.xml")
     assert budget.acquire()["blocked"]
     assert budget.snapshot()["cooldown_seconds"] == 7200
+
+
+def test_worker_pacing_is_additional_to_global_pacing_and_survives_restart(tmp_path):
+    clock = Clock()
+    path = tmp_path / 'workers.json'
+    budget = RequestBudget(120, path, clock, worker_ceiling=16)
+    assert budget.acquire('primary')['allowed']
+    clock.now += 1.875
+    assert not budget.acquire('primary')['allowed']
+    assert budget.acquire('secondary')['allowed']
+    restarted = RequestBudget(120, path, clock, worker_ceiling=16)
+    clock.now += 1.875
+    assert restarted.acquire('primary')['allowed']
+    assert not restarted.acquire('secondary')['allowed']
+    assert restarted.requests == 1
+
+
+def test_six_workers_never_multiply_the_global_ceiling():
+    clock = Clock()
+    budget = RequestBudget(120, clock=clock, worker_ceiling=16)
+    budget.rate = 120
+    workers = ['primary', 'secondary'] + [f'worker{i}' for i in range(3, 7)]
+    granted = {w: [] for w in workers}
+    for _ in range(120):
+        with ThreadPoolExecutor(6) as pool:
+            permits = list(pool.map(budget.acquire, workers))
+        assert sum(p['allowed'] for p in permits) <= 1
+        for w, p in zip(workers, permits):
+            if p['allowed']:
+                granted[w].append(clock.now)
+        clock.now += 0.5
+    assert sum(map(len, granted.values())) <= 120
+    for times in granted.values():
+        assert 0 < len(times) <= 16
+        assert all(b - a >= 3.75 for a, b in zip(times, times[1:]))
+
+
+def test_repeated_timeouts_back_off_and_persist_without_claiming_http_refusals(tmp_path):
+    clock = Clock()
+    path = tmp_path / 'timeouts.json'
+    budget = RequestBudget(120, path, clock)
+    budget.record(0, outcome='timeout')
+    assert budget.rate == 32 and budget.network_slowdowns == 0
+    budget.record(200)  # a healthy sibling must not erase a failing session
+    budget.record(0, outcome='network_error')
+    budget.record(504)
+    assert budget.rate == 24
+    assert budget.target == pytest.approx(28.8)
+    assert budget.network_slowdowns == 1 and budget.refusals == 0
+    budget.record(0, outcome='timeout')  # in-flight failures cannot reduce twice
+    assert budget.rate == 24
+    restored = RequestBudget(120, path, clock)
+    assert restored.acquire('worker3')['blocked']
+    assert restored.acquire('worker3')['wait_ms'] == 60000
+    assert restored.target == pytest.approx(28.8)
+    clock.now += 60
+    assert restored.acquire('worker3')['allowed']
+
+
+def test_isolated_old_timeout_does_not_trigger_new_incident():
+    clock = Clock()
+    budget = RequestBudget(120, clock=clock)
+    budget.record(0, outcome='timeout')
+    clock.now += 61
+    budget.record(0, outcome='timeout')
+    budget.record(0, outcome='timeout')
+    assert budget.network_slowdowns == 0

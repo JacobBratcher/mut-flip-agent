@@ -106,9 +106,9 @@ Files live in `%LOCALAPPDATA%\MUTFlipFeeder`: `extension\` (with `config.json` h
 
 Re-run it any time to update (it remembers the URL and token). Over RDP, **disconnect** when you leave, don't sign out.
 
-### Two independent feeder instances
+### Independent feeder instances
 
-Server 1.12.0 and extension 1.5.0 support two long-lived Chromium instances with separate browser profiles, cookies, settings, logs, and keepers. Update the primary installation normally, then install the second instance:
+Server 1.13.0 and extension 1.5.0 support up to 16 long-lived Chromium instances with separate browser profiles, cookies, settings, logs, and keepers. Update the primary installation normally, then install the second instance:
 
 ```powershell
 $env:MUT_FEEDER_INSTANCE = 'secondary'
@@ -119,9 +119,13 @@ try {
 }
 ```
 
+For additional instances, use `MUT_FEEDER_INSTANCE=worker3` through `worker16` with the same installer. Each gets its own `MUTFlipWorkerN` root and numbered startup/desktop shortcut. Add profiles gradually and verify successful scans from each worker ID in `/health`.
+
+Each browser is additionally paced by `worker_requests_per_minute` (default 16). Six profiles can provide up to 96 requests/minute in aggregate, always constrained by the shared adaptive ceiling and actual site responses. Three timeouts/network failures or transient server errors within 60 seconds trigger a shared one-minute cooldown, reduce the pace by 25%, and lower its learned limit. Saved pacing and cooldowns survive restarts. One isolated timeout resets the success streak without immediately stopping healthy sessions.
+
 The second instance uses `%LOCALAPPDATA%\MUTFlipWorker2` and a **MUT Flip Feeder 2** startup/desktop shortcut. Its first install copies the saved agent connection settings from the primary instance, while creating a new browser profile. Reinstall each instance separately when changing the shared token. The existing primary profile stays at `%LOCALAPPDATA%\MUTFlipFeeder\profile`.
 
-Both workers lease different cards from one queue and obtain permits from the same global request budget. A 16 requests/minute ceiling means **16 total**, not 16 per instance. Site refusals and Retry-After pauses apply to both. Separate sessions can keep useful work moving when a browser hangs, but do not establish a higher allowed request rate. Roughly one scan per minute across 89 cards needs roughly 89 successful requests/minute plus retries; the 65-second spare-scan minimum avoids repeatedly polling the same card immediately.
+All workers lease different cards from one queue and obtain permits from the same global request budget. A 16 requests/minute ceiling means **16 total**, not 16 per instance. Site refusals and Retry-After pauses apply to both. Separate sessions can keep useful work moving when a browser hangs, but do not establish a higher allowed request rate. Roughly one scan per minute across 89 cards needs roughly 89 successful requests/minute plus retries; the 65-second spare-scan minimum avoids repeatedly polling the same card immediately.
 
 Authenticated `/health` identifies `primary` and `secondary` workers and reports each one's successful-ingest timestamp and result counts, including `timeout`, `network_error`, and HTTP statuses. Each keeper evaluates its own worker's progress, so a healthy sibling cannot hide a stalled instance. The optional loopback relay is shared by both keepers.
 
@@ -146,9 +150,10 @@ What the author's instance actually runs, set in the add-on's Configuration tab 
 
 | Setting | Live value | Default |
 |---|---|---|
-| Add-on / feeder | 1.12.1 / extension 1.5.0 | |
+| Add-on / feeder | 1.13.0 / extension 1.5.0 | |
 | `requests_per_minute` (planner) | 90 | 20 |
 | `http_requests_per_minute` (adaptive upper bound) | 120; actual budget ramps with successful requests | 40 |
+| `worker_requests_per_minute` (per profile) | 16 | 16 |
 | `fill_scan_capacity` / `min_scan_seconds` | true / 65 | false / 65 |
 | `min_ovr` | 88 (89 cards at the last discovery) | 85 |
 | `tiers.hot_min_value` / `hot_min_daily_sales` | 0 / 0 (no hot filter: every card with sales qualifies) | 25,000 / 5 |
