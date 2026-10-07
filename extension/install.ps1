@@ -97,7 +97,7 @@ if (-not $srcExt) { throw 'The download did not contain the extension folder. Tr
 # Validate the download before stopping the working feeder.
 $downloadManifest = Get-Content (Join-Path $srcExt.FullName 'manifest.json') -Raw | ConvertFrom-Json
 $downloadWorker = Get-Content (Join-Path $srcExt.FullName 'background.js') -Raw
-if ([version]$downloadManifest.version -lt [version]'1.5.0' -or $downloadWorker -notmatch 'X-Feeder-Id') {
+if ([version]$downloadManifest.version -lt [version]'1.5.1' -or $downloadWorker -notmatch 'X-Feeder-Id') {
     throw 'Downloaded feeder is missing the updated scanning worker. Existing feeder was not stopped.'
 }
 . (Join-Path $srcExt.FullName 'worker-state.ps1')

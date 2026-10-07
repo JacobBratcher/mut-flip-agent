@@ -115,11 +115,11 @@ function bump(field, n = 1) {
 const MAX_INFLIGHT = 4;
 const UPDATE_WAITS = [1500, 2000, 4000];
 
-async function checkOne(tab, it, cfg) {
-  let res;
-  // Bound each refresh so it finishes within the server's five-minute card lease.
-  const deadline = Date.now() + 85000;
-  for (let attempt = 0; attempt <= UPDATE_WAITS.length; attempt++) {
+// Queue permit waiters within one profile. Without FIFO ordering, its four
+// checks race for each slot and an unlucky leased card can expire unscanned.
+let permitLock = Promise.resolve();
+function requestPermit(deadline) {
+  const turn = permitLock.then(async () => {
     while (true) {
       if (!(await get(["enabled"])).enabled || Date.now() >= deadline) return { kind: "pending" };
       const permit = await agent("POST", "/request-permit", {});
@@ -127,9 +127,21 @@ async function checkOne(tab, it, cfg) {
       await set({ requestRate: permit.rpm });
       if (permit.blocked) return { kind: "blocked", res: { status: 429, detail: "shared cooldown" },
                                    wait_ms: permit.wait_ms };
-      if (permit.allowed) break;
+      if (permit.allowed) return { kind: "permit" };
       await sleep(Math.min(10000, Math.max(1, permit.wait_ms)));
     }
+  });
+  permitLock = turn.catch(() => {});
+  return turn;
+}
+
+async function checkOne(tab, it, cfg) {
+  let res;
+  // Bound each refresh so it finishes within the server's five-minute card lease.
+  const deadline = Date.now() + 85000;
+  for (let attempt = 0; attempt <= UPDATE_WAITS.length; attempt++) {
+    const gate = await requestPermit(deadline);
+    if (gate.kind !== "permit") return gate;
     try {
       res = await tabMsg(tab, { type: "mutfeeder:fetch", uid: it.uid, platform: cfg.platform }, 25000);
     } catch (e) {

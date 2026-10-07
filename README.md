@@ -108,7 +108,7 @@ Re-run it any time to update (it remembers the URL and token). Over RDP, **disco
 
 ### Independent feeder instances
 
-Server 1.13.0 and extension 1.5.0 support up to 16 long-lived Chromium instances with separate browser profiles, cookies, settings, logs, and keepers. Update the primary installation normally, then install the second instance:
+Server 1.13.0 and extension 1.5.1 support up to 16 long-lived Chromium instances with separate browser profiles, cookies, settings, logs, and keepers. Update the primary installation normally, then install the second instance:
 
 ```powershell
 $env:MUT_FEEDER_INSTANCE = 'secondary'
@@ -150,9 +150,9 @@ What the author's instance actually runs, set in the add-on's Configuration tab 
 
 | Setting | Live value | Default |
 |---|---|---|
-| Add-on / feeder | 1.13.0 / extension 1.5.0 | |
+| Add-on / feeder | 1.13.0 / extension 1.5.1 | |
 | `requests_per_minute` (planner) | 90 | 20 |
-| `http_requests_per_minute` (adaptive upper bound) | 120; actual budget ramps with successful requests | 40 |
+| `http_requests_per_minute` (adaptive upper bound) | 90; actual budget ramps with successful requests | 40 |
 | `worker_requests_per_minute` (per profile) | 16 | 16 |
 | `fill_scan_capacity` / `min_scan_seconds` | true / 65 | false / 65 |
 | `min_ovr` | 88 (89 cards at the last discovery) | 85 |
