@@ -26,9 +26,18 @@ jobs:
         run: |
           $tokens = $null
           $parseErrors = $null
-          foreach ($file in @('extension/install.ps1', 'extension/agent-relay.ps1')) {
+          foreach ($file in @('extension/install.ps1', 'extension/agent-relay.ps1', 'extension/worker-state.ps1')) {
             [System.Management.Automation.Language.Parser]::ParseFile(
               (Join-Path $PWD $file), [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count) { $parseErrors | Format-List; exit 1 }
+          }
+          # Here-string launcher bodies are not parsed as code by the outer parse.
+          $installer = Get-Content extension/install.ps1 -Raw
+          foreach ($name in @('keeperPs', 'togglePs')) {
+            $match = [regex]::Match($installer, '(?s)\$' + $name + " = @'\r?\n(.*?)\r?\n'@")
+            if (-not $match.Success) { throw "Missing launcher $name" }
+            [System.Management.Automation.Language.Parser]::ParseInput(
+              $match.Groups[1].Value, [ref]$tokens, [ref]$parseErrors) | Out-Null
             if ($parseErrors.Count) { $parseErrors | Format-List; exit 1 }
           }
       - uses: actions/setup-python@v5

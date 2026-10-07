@@ -5,7 +5,13 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$root = Join-Path $env:LOCALAPPDATA 'MUTFlipFeeder'
+$instance = if ($env:MUT_FEEDER_INSTANCE) { $env:MUT_FEEDER_INSTANCE.ToLowerInvariant() } else { 'primary' }
+if ($instance -notin @('primary', 'secondary')) { throw 'MUT_FEEDER_INSTANCE must be primary or secondary.' }
+# Separate roots ensure the legacy primary keeper cannot mistake worker 2 for
+# its own browser. Never reuse a personal browser's profile or cookies.
+$rootName = if ($instance -eq 'primary') { 'MUTFlipFeeder' } else { 'MUTFlipWorker2' }
+$shortcutName = if ($instance -eq 'primary') { 'MUT Flip Feeder' } else { 'MUT Flip Feeder 2' }
+$root = Join-Path $env:LOCALAPPDATA $rootName
 $ext = Join-Path $root 'extension'
 $profileDir = Join-Path $root 'profile'
 $utf8 = New-Object System.Text.UTF8Encoding $false
@@ -15,6 +21,9 @@ $Token = $env:MUT_FEEDER_TOKEN
 $useRelay = $env:MUT_FEEDER_LAN_RELAY -eq '1'
 # Re-running? Reuse the URL and token from the last install.
 $saved = Join-Path $ext 'config.json'
+if ($instance -eq 'secondary' -and -not (Test-Path $saved)) {
+    $saved = Join-Path $env:LOCALAPPDATA 'MUTFlipFeeder\extension\config.json'
+}
 $old = $null
 if (Test-Path $saved) {
     try {
@@ -41,12 +50,15 @@ if ($useRelay -and ($uri.Scheme -ne 'http' -or $uri.UserInfo -or $uri.AbsolutePa
 
 # 1. Check the agent is reachable before doing anything else.
 Write-Host "Checking agent at $AgentUrl ..."
+$cfg = $null
 try {
     $cfg = Invoke-RestMethod "$AgentUrl/config" -Headers @{ 'X-Feeder-Token' = $Token } -TimeoutSec 10
     Write-Host "  OK: platform $($cfg.platform), one request every $($cfg.interval_ms) ms" -ForegroundColor Green
 } catch {
     Write-Host "  Can't reach the agent or the token is wrong: $($_.Exception.Message)" -ForegroundColor Yellow
-    Write-Host "  Continuing; fix the URL/token and re-run the installer." -ForegroundColor Yellow
+}
+if ($cfg.worker_tracking_version -ne 1) {
+    throw 'A reachable MUT Flip Agent 1.12.0 or later is required for per-worker health checks.'
 }
 
 # 2. Chromium. Regular Chrome no longer lets a script load an unpacked extension.
@@ -70,8 +82,8 @@ Write-Host "  Chromium: $chrome" -ForegroundColor Green
 
 # 3. Download the extension from GitHub.
 Write-Host 'Downloading extension ...'
-$zip = Join-Path $env:TEMP 'mut-flip-agent.zip'
-$src = Join-Path $env:TEMP 'mut-flip-agent-src'
+$zip = Join-Path $env:TEMP ("mut-flip-agent-$instance.zip")
+$src = Join-Path $env:TEMP ("mut-flip-agent-src-$instance")
 Invoke-WebRequest 'https://codeload.github.com/JacobBratcher/mut-flip-agent/zip/refs/heads/main' -OutFile $zip -UseBasicParsing
 if (Test-Path $src) { Remove-Item $src -Recurse -Force -ErrorAction SilentlyContinue }
 Expand-Archive $zip $src -Force
@@ -83,9 +95,10 @@ if (-not $srcExt) { throw 'The download did not contain the extension folder. Tr
 # Validate the download before stopping the working feeder.
 $downloadManifest = Get-Content (Join-Path $srcExt.FullName 'manifest.json') -Raw | ConvertFrom-Json
 $downloadWorker = Get-Content (Join-Path $srcExt.FullName 'background.js') -Raw
-if ([version]$downloadManifest.version -lt [version]'1.4.0' -or $downloadWorker -notmatch 'X-Feeder-Version') {
+if ([version]$downloadManifest.version -lt [version]'1.5.0' -or $downloadWorker -notmatch 'X-Feeder-Id') {
     throw 'Downloaded feeder is missing the updated scanning worker. Existing feeder was not stopped.'
 }
+. (Join-Path $srcExt.FullName 'worker-state.ps1')
 if (Test-Path $ext) {
     $backup = Join-Path $root ('extension-backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     Copy-Item $ext $backup -Recurse
@@ -95,16 +108,34 @@ if (Test-Path $ext) {
 # Killing the parent takes its renderer children with it, so by the time the loop
 # reaches those they are already gone - never treat that as a failure.
 try {
-    $stale = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -in 'chrome.exe', 'powershell.exe', 'pwsh.exe' -and $_.CommandLine -like '*MUTFlipFeeder*' -and $_.ProcessId -ne $PID } | Sort-Object @{Expression={ if ($_.Name -eq 'chrome.exe') { 1 } else { 0 } }})
+    # Modern keepers record their PID, including when elevated command lines are
+    # hidden. Fail safely if this installer cannot stop the existing keeper.
+    $pidFile = Join-Path $root 'keeper.pid'
+    $allProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    if (-not (Test-Path $pidFile) -and (Test-Path (Join-Path $root 'feeder.ps1')) -and
+        @($allProcesses | Where-Object { $_.Name -in @('powershell.exe', 'pwsh.exe') -and -not $_.CommandLine }).Count) {
+        throw 'A legacy keeper may be elevated. Re-run this upgrade from an elevated PowerShell so it can be identified safely.'
+    }
+    if (Test-Path $pidFile) {
+        $record = [IO.File]::ReadAllText($pidFile) | ConvertFrom-Json
+        if ($record.pid -and $record.pid -ne $PID) {
+            $keeperProcess = Get-Process -Id $record.pid -ErrorAction SilentlyContinue
+            if ($keeperProcess -and $keeperProcess.ProcessName -in @('powershell', 'pwsh') -and
+                $keeperProcess.StartTime.ToUniversalTime().Ticks.ToString() -eq $record.started_ticks) {
+                Stop-Process -Id $record.pid -Force -ErrorAction Stop
+            }
+        }
+    }
+    $stale = @(Get-FeederOwnedProcesses (Get-CimInstance Win32_Process -ErrorAction Stop) $profileDir (Join-Path $root 'feeder.ps1') |
+        Where-Object { $_.ProcessId -ne $PID } | Sort-Object @{Expression={ if ($_.Name -eq 'chrome.exe') { 1 } else { 0 } }})
     foreach ($p in $stale) {
         try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
     }
     if ($stale.Count) { Write-Host "  Closed $($stale.Count) old feeder process(es)." }
-} catch { throw 'Could not stop the previous feeder. Files have not been replaced.' }
+} catch { throw ('Could not stop the previous feeder. Files have not been replaced. ' + $_.Exception.Message) }
 Start-Sleep -Seconds 2
-$remaining = @(Get-CimInstance Win32_Process -ErrorAction Stop |
-    Where-Object { $_.Name -in 'chrome.exe', 'powershell.exe', 'pwsh.exe' -and $_.CommandLine -like '*MUTFlipFeeder*' -and $_.ProcessId -ne $PID })
+$remaining = @(Get-FeederOwnedProcesses (Get-CimInstance Win32_Process -ErrorAction Stop) $profileDir (Join-Path $root 'feeder.ps1') |
+    Where-Object { $_.ProcessId -ne $PID })
 if ($remaining.Count) { throw 'A previous feeder process is still running. Files have not been replaced.' }
 
 New-Item -ItemType Directory -Force $root | Out-Null
@@ -118,6 +149,7 @@ if ($old) { foreach ($property in $old.PSObject.Properties) { $settings[$propert
 $settings.agentUrl = $AgentUrl
 $settings.token = $Token
 $settings.autostart = $true
+$settings.workerId = $instance
 if ($useRelay) {
     $settings.relayUpstreamUrl = $AgentUrl
     $settings.agentUrl = 'http://127.0.0.1:18099'
@@ -190,7 +222,15 @@ $keeperPs = @'
 $ErrorActionPreference = 'SilentlyContinue'
 $chrome = '__CHROME__'
 $flags = '__FLAGS__'
+$profileDir = '__PROFILE__'
+$workerId = '__WORKER__'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $here 'extension\worker-state.ps1')
+$mutex = New-Object Threading.Mutex($false, ('Local\MUTFlipFeederKeeper-' + $workerId))
+try { $ownsMutex = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
+if (-not $ownsMutex) { exit }
+@{ pid = $PID; started_ticks = (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks.ToString() } |
+    ConvertTo-Json -Compress | Set-Content (Join-Path $here 'keeper.pid')
 $showFlag = Join-Path $here 'show.flag'
 $hiddenList = Join-Path $here 'hidden.txt'
 Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $here 'win.cs')))
@@ -215,11 +255,16 @@ $relayProcess = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
     Select-Object -First 1 | ForEach-Object { Get-Process -Id $_.ProcessId }
 while ($true) {
     if ((Get-Date).Ticks -ge $nextScan) {
+        # Both keepers share one loopback relay. Its owner may belong to the
+        # other instance (or be elevated); adopt the loopback listener by PID.
+        if ($cfg.relayUpstreamUrl) {
+            $listener = Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort 18099 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($listener) { $relayProcess = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue }
+        }
         if ($cfg.relayUpstreamUrl -and (-not $relayProcess -or $relayProcess.HasExited)) {
             $relayProcess = Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$relayScript`"") -WindowStyle Hidden -PassThru
         }
-        $pids = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" |
-            Where-Object { $_.CommandLine -like '*MUTFlipFeeder*' } | ForEach-Object { [uint32]$_.ProcessId })
+        $pids = @(Get-FeederProcessIds (Get-CimInstance Win32_Process -Filter "Name='chrome.exe'") $profileDir)
         if (-not $pids.Count) {
             Start-Process -FilePath $chrome -ArgumentList $flags -WindowStyle Minimized
             $launched = Get-Date
@@ -235,8 +280,9 @@ while ($true) {
             $h = Invoke-RestMethod "$($cfg.agentUrl)/health" -Headers @{ 'X-Feeder-Token' = $cfg.token } -TimeoutSec 10
             $up = ((Get-Date) - $launched).TotalSeconds
             $since = ((Get-Date) - $lastRestart).TotalSeconds
-            if ($h.ingest_age -gt $STALE -and $h.state -ne 'blocked' -and $up -gt $GRACE -and $since -gt 900) {
-                Write-Log "No prices for $($h.ingest_age)s; restarting the feeder browser."
+            $workerAge = Get-FeederWorkerAge $h.clients $workerId $up ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+            if ($workerAge -gt $STALE -and $h.state -ne 'blocked' -and $up -gt $GRACE -and $since -gt 900) {
+                Write-Log "Worker $workerId has no prices for $([int]$workerAge)s; restarting its browser."
                 foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }
                 $lastRestart = Get-Date
                 $nextScan = 0
@@ -276,7 +322,7 @@ function Write-HiddenRunner($vbsPath, $ps1Path) {
 $keeper = Join-Path $root 'feeder.ps1'
 $toggle = Join-Path $root 'toggle.ps1'
 [IO.File]::WriteAllText((Join-Path $root 'win.cs'), $winCs, $utf8)
-$keeperText = $keeperPs.Replace('__CHROME__', $chrome.Replace("'", "''")).Replace('__FLAGS__', $flags.Replace("'", "''"))
+$keeperText = $keeperPs.Replace('__CHROME__', $chrome.Replace("'", "''")).Replace('__FLAGS__', $flags.Replace("'", "''")).Replace('__PROFILE__', $profileDir.Replace("'", "''")).Replace('__WORKER__', $instance)
 [IO.File]::WriteAllText($keeper, $keeperText, $utf8)
 [IO.File]::WriteAllText($toggle, $togglePs, $utf8)
 Write-HiddenRunner (Join-Path $root 'feeder.vbs') $keeper
@@ -289,7 +335,7 @@ $shortcuts = @(
     @{ Dir = [Environment]::GetFolderPath('Desktop'); Vbs = 'toggle.vbs'; Desc = 'Show or hide the MUT Flip Feeder window' }
 )
 foreach ($s in $shortcuts) {
-    $lnk = $shell.CreateShortcut((Join-Path $s.Dir 'MUT Flip Feeder.lnk'))
+    $lnk = $shell.CreateShortcut((Join-Path $s.Dir ($shortcutName + '.lnk')))
     $lnk.TargetPath = $wscript
     $lnk.Arguments = "`"$(Join-Path $root $s.Vbs)`""
     $lnk.WorkingDirectory = $root
@@ -310,12 +356,12 @@ for ($attempt = 0; $attempt -lt 12; $attempt++) {
     Start-Sleep -Seconds 5
     try {
         $health = Invoke-RestMethod "$AgentUrl/health" -Headers @{ 'X-Feeder-Token' = $Token } -TimeoutSec 5
-        $active = @($health.clients | Where-Object { $_.feeder_version -eq $manifest.version -and $_.routes.'queue:1'.last_at -ge $startedAt })
+        $active = @($health.clients | Where-Object { $_.worker_id -eq $instance -and $_.feeder_version -eq $manifest.version -and $_.routes.'queue:1'.last_at -ge $startedAt })
         if ($active.Count) { $verifiedWorker = $true; break }
     } catch { }
 }
 if ($verifiedWorker) {
-    Write-Host "Verified: server received requests from feeder $($manifest.version)." -ForegroundColor Green
+    Write-Host "Verified: server received requests from $instance feeder $($manifest.version)." -ForegroundColor Green
 } else {
     Write-Warning 'Files installed, but the server has not confirmed the new worker. Show the feeder window and check its status. Do not assume the update is active yet.'
 }

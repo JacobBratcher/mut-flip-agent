@@ -27,21 +27,24 @@ async function bootstrap() {
     const r = await fetch(chrome.runtime.getURL("config.json"));
     if (!r.ok) return;
     const c = await r.json();
-    const cur = await get(["agentUrl", "token", "enabled"]);
+    const cur = await get(["agentUrl", "token", "enabled", "workerId"]);
     const patch = {};
     if (c.agentUrl && c.agentUrl !== cur.agentUrl) patch.agentUrl = c.agentUrl;
     if (c.token && c.token !== cur.token) patch.token = c.token;
+    const workerId = /^[a-zA-Z0-9_-]{1,40}$/.test(c.workerId || "") ? c.workerId : "primary";
+    if (cur.workerId !== workerId) patch.workerId = workerId;
     if (cur.enabled === undefined && c.autostart) patch.enabled = true;
     if (Object.keys(patch).length) await set(patch);
   } catch (_) { /* no config.json: configured via the Settings page instead */ }
 }
 
 async function agent(method, path, body) {
-  const { agentUrl, token } = await get(["agentUrl", "token"]);
+  const { agentUrl, token, workerId = "primary" } = await get(["agentUrl", "token", "workerId"]);
   const r = await fetch(agentUrl.replace(/\/$/, "") + path, {
     method,
     headers: { "Content-Type": "application/json", "X-Feeder-Token": token || "",
-               "X-Feeder-Version": chrome.runtime.getManifest().version },
+               "X-Feeder-Version": chrome.runtime.getManifest().version,
+               "X-Feeder-Id": workerId },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(15000),
   });
@@ -136,6 +139,7 @@ async function checkOne(tab, it, cfg) {
     await bump("requests");
     const feedback = await agent("POST", "/request-result", {
       status: Math.max(0, res?.status || 0), retry_after: res?.retry_after,
+      outcome: res?.status === -1 ? "timeout" : res?.status === 0 ? "network_error" : "http",
     });
     if (res && res.status !== 200) {
       // Allowlisted metadata only: no response bodies, URLs, cookies or tokens.

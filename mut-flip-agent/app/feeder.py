@@ -7,6 +7,7 @@ processed immediately, so Discord alerts go out the moment a deal shows up.
 import hmac
 import json
 import logging
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -30,12 +31,17 @@ def serve(agent, port):
         def log_message(self, *a):
             pass
 
-        def _activity(self, route, items=0):
+        def _activity(self, route, items=0, result=None, accepted=False):
+            worker_id = self.headers.get("X-Feeder-Id", "legacy")
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", worker_id):
+                worker_id = "unknown"
             key = (self.client_address[0], self.headers.get("User-Agent", "")[:200],
-                   self.headers.get("X-Feeder-Version", "unknown")[:30])
+                   self.headers.get("X-Feeder-Version", "unknown")[:30], worker_id)
             with clients_lock:
                 client = clients.setdefault(key, {"address": key[0], "user_agent": key[1],
-                                                  "feeder_version": key[2], "routes": {}})
+                                                  "feeder_version": key[2], "worker_id": key[3],
+                                                  "first_seen": time.time(), "last_ingest_at": 0,
+                                                  "results": {}, "routes": {}})
                 clients.move_to_end(key)
                 if len(clients) > 16:
                     clients.popitem(last=False)
@@ -43,6 +49,10 @@ def serve(agent, port):
                 metric["calls"] += 1
                 metric["items"] += items
                 metric["last_at"] = time.time()
+                if accepted:
+                    client["last_ingest_at"] = time.time()
+                if result is not None:
+                    client["results"][result] = client["results"].get(result, 0) + 1
 
         def _auth(self):
             got = self.headers.get("X-Feeder-Token", "")
@@ -77,6 +87,7 @@ def serve(agent, port):
                 rpm = max(1, int(agent.cfg["requests_per_minute"]))
                 return self._send(200, {"platform": agent.cfg["platform"],
                                         "request_budget_version": 1,
+                                        "worker_tracking_version": 1,
                                         "interval_ms": int(60000 / rpm)})
             if u.path == "/queue":
                 n = min(10, max(1, int(parse_qs(u.query).get("n", ["5"])[0])))
@@ -111,6 +122,8 @@ def serve(agent, port):
                 with clients_lock:
                     activity = [{"address": c["address"], "user_agent": c["user_agent"],
                                  "feeder_version": c["feeder_version"],
+                                 "worker_id": c["worker_id"], "first_seen": c["first_seen"],
+                                 "last_ingest_at": c["last_ingest_at"], "results": dict(c["results"]),
                                  "routes": {k: dict(v) for k, v in c["routes"].items()}}
                                 for c in clients.values()]
                 budget = agent.api.budget.snapshot()
@@ -141,7 +154,10 @@ def serve(agent, port):
                 status = body.get("status")
                 if type(status) is not int or not 0 <= status <= 599:
                     return self._send(400, {"error": "HTTP status required"})
-                self._activity("request-result")
+                outcome = body.get("outcome", "http")
+                if outcome not in ("http", "timeout", "network_error") or (outcome != "http" and status != 0):
+                    return self._send(400, {"error": "invalid result outcome"})
+                self._activity("request-result", result=f"http_{status}" if outcome == "http" else outcome)
                 return self._send(200, agent.api.budget.record(status, body.get("retry_after")))
             if u.path == "/ingest":
                 uid, data = body.get("uid"), body.get("data")
@@ -161,6 +177,7 @@ def serve(agent, port):
                         return self._send(200, {"ok": False, "reason": "prices refreshing",
                                                 "retry_after": 60})
                     agent.feeder_state = "ok"
+                self._activity("ingest-accepted", accepted=True)
                 return self._send(200, {"ok": True})
             if u.path == "/status":
                 state = str(body.get("state", ""))[:20]
