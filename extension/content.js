@@ -17,7 +17,14 @@ async function fetchPrices(uid, platform) {
              detail: `HTTP ${r.status} (${response_kind}${challenged ? ", challenge" : ""})` };
   }
   const body = await r.json();
-  return { status: 200, data: body && body.data };
+  const data = body && body.data;
+  const apiError = body?.error || (Array.isArray(body?.errors) ? body.errors.length : body?.errors);
+  if (apiError || !data || typeof data !== "object" || Array.isArray(data) ||
+      (!data.updating && (!data.pricesData || typeof data.pricesData !== "object" || Array.isArray(data.pricesData)))) {
+    // A successful HTTP response can still contain an API error. Keep its body private.
+    return { status: 0, outcome: "api_error", http_status: 200, response_kind: "json" };
+  }
+  return { status: 200, data };
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {

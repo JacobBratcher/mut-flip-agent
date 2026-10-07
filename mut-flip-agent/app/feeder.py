@@ -90,6 +90,7 @@ def serve(agent, port):
                 return self._send(200, {"platform": agent.cfg["platform"],
                                         "request_budget_version": 1,
                                         "worker_tracking_version": 1,
+                                        "scan_diagnostics_version": 1,
                                         "interval_ms": int(60000 / rpm)})
             if u.path == "/queue":
                 n = min(10, max(1, int(parse_qs(u.query).get("n", ["5"])[0])))
@@ -158,10 +159,18 @@ def serve(agent, port):
                 if type(status) is not int or not 0 <= status <= 599:
                     return self._send(400, {"error": "HTTP status required"})
                 outcome = body.get("outcome", "http")
-                if outcome not in ("http", "timeout", "network_error") or (outcome != "http" and status != 0):
+                if outcome not in ("http", "timeout", "network_error", "api_error") or (outcome != "http" and status != 0):
                     return self._send(400, {"error": "invalid result outcome"})
                 self._activity("request-result", result=f"http_{status}" if outcome == "http" else outcome)
-                return self._send(200, agent.api.budget.record(status, body.get("retry_after"), outcome))
+                feedback = agent.api.budget.record(status, body.get("retry_after"), outcome)
+                uid = body.get("uid")
+                if isinstance(uid, str):
+                    with agent.lock:
+                        if agent.db.item(uid):
+                            result = ("refreshing" if status == 200 and body.get("refreshing") is True
+                                      else f"http_{status}" if outcome == "http" else outcome)
+                            agent.scan_tracking.attempt(uid, self._worker_id(), result, time.time())
+                return self._send(200, feedback)
             if u.path == "/ingest":
                 uid, data = body.get("uid"), body.get("data")
                 if not isinstance(uid, str) or not isinstance(data, dict):
