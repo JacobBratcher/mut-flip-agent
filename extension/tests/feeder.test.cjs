@@ -23,7 +23,7 @@ function background(responses, overrides = {}, workerId = 'primary') {
       } },
       alarms: { create: noop, onAlarm: event },
       runtime: { onStartup: event, onInstalled: event, onMessage: event,
-                 getManifest: () => ({ version: '1.5.0' }) },
+                 getManifest: () => ({ version: '1.5.1' }) },
       tabs: { sendMessage: async () => { calls.push('mut.gg'); return responses.shift(); } },
     },
     fetch: async (url, options) => {
@@ -37,7 +37,7 @@ function background(responses, overrides = {}, workerId = 'primary') {
       };
       const data = endpoint in overrides ? overrides[endpoint] : defaults[endpoint];
       if (data instanceof Error) throw data;
-      return { ok: true, json: async () => data };
+      return { ok: true, json: async () => typeof data === 'function' ? await data() : data };
     },
   });
   vm.runInContext(readFileSync(path.join(__dirname, '../background.js'), 'utf8'), context);
@@ -52,7 +52,7 @@ test('every refresh retry obtains a permit and reports its result before ingest'
   ]);
   assert.equal(fixture.storage.stats.requests, 2);
   assert.equal(fixture.storage.stats.checks, 1);
-  assert.ok(fixture.calls.filter(c => c.endpoint).every(c => c.version === '1.5.0' && c.workerId === 'primary'));
+  assert.ok(fixture.calls.filter(c => c.endpoint).every(c => c.version === '1.5.1' && c.workerId === 'primary'));
 });
 
 test('exhausted updating responses never count as fresh checks', async () => {
@@ -139,4 +139,24 @@ test('stored failure metadata excludes raw details and credentials, while keepin
     at: 1800000000000, uid: '27-1', status: 429, httpStatus: 429,
     responseKind: 'html', challenged: true, redirected: false,
   });
+});
+
+
+test('permit waiters are FIFO so concurrent checks cannot overtake a waiting card', async () => {
+  let release;
+  const firstWait = new Promise(resolve => { release = resolve; });
+  let permits = 0;
+  const fixture = background([
+    {status: 200, data: {pricesData: {}}}, {status: 200, data: {pricesData: {}}}
+  ], {'/request-permit': async () => {
+    if (++permits === 1) await firstWait;
+    return {allowed: true, blocked: false, wait_ms: 0, rpm: 32};
+  }});
+  const first = fixture.run(), second = fixture.run();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(permits, 1);
+  release();
+  const results = await Promise.all([first, second]);
+  assert.deepEqual(results.map(r => r.kind), ['ok', 'ok']);
+  assert.equal(permits, 2);
 });
