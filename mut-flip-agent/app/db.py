@@ -140,6 +140,13 @@ class DB:
         return rows
 
     @locked
+    def defer_refresh(self, uid, next_check):
+        """End an unfinished check without pretending its prices are fresh."""
+        self.c.execute('UPDATE items SET next_check=?,last_check=?,lease_until=? WHERE uid=?',
+                       (next_check, time.time(), next_check, uid))
+        self.c.commit()
+
+    @locked
     def set_schedule(self, uid, tier, next_check):
         self.c.execute("UPDATE items SET tier=?, next_check=?, last_check=?, lease_until=0 WHERE uid=?",
                        (tier, next_check, time.time(), uid))

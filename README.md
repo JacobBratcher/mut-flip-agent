@@ -108,7 +108,7 @@ Re-run it any time to update (it remembers the URL and token). Over RDP, **disco
 
 ### Independent feeder instances
 
-Server 1.14.1 and extension 1.6.1 support up to 16 long-lived Chromium instances with separate browser profiles, cookies, settings, logs, and keepers. Update the primary installation normally, then install the second instance:
+Server 1.14.2 and extension 1.6.2 support up to 16 long-lived Chromium instances with separate browser profiles, cookies, settings, logs, and keepers. Update the primary installation normally, then install the second instance:
 
 ```powershell
 $env:MUT_FEEDER_INSTANCE = 'secondary'
@@ -150,7 +150,7 @@ Deployment target for the 87+ rollout. Confirm the active pace and worker versio
 
 | Setting | Rollout target | Default |
 |---|---|---|
-| Add-on / feeder | 1.14.1 / extension 1.6.1 | |
+| Add-on / feeder | 1.14.2 / extension 1.6.2 | |
 | `requests_per_minute` (planner) | 180 | 20 |
 | `http_requests_per_minute` (adaptive upper bound) | 180; actual budget ramps with successful requests | 40 |
 | `worker_requests_per_minute` (per profile) | 16 | 16 |
@@ -208,3 +208,5 @@ The authenticated `/scan-report` includes up to 200 cards, ordered with missing 
 Extension 1.6.0 requires server 1.14.0. JSON API errors or malformed/missing price data returned with HTTP 200 are reported as `api_error` without retaining the error body. Repeated failures use the shared cooldown. Each profile keeps at most two card checks in flight to reduce leases waiting behind its per-worker permit. The configurable aggregate ceiling supports up to 240 requests/minute for larger fleets; defaults and automatic backoff remain unchanged. Increase the live ceiling only in measured stages, and do not reset a learned limit after a refusal merely to keep expanding.
 
 Server 1.14.1 and feeder 1.6.1 reduce retries for a card whose latest response is still `updating`, which has accumulated at least eight refreshing responses, and which has no accepted snapshot within five minutes. Such a card gets one permitted probe per scheduled lease instead of four closely spaced requests. Healthy/recovered cards keep normal refresh retries. A ready response is still accepted immediately, and the next lease restores normal retries. No unfinished response is used for alerts or scan coverage.
+
+Server 1.14.2 / feeder 1.6.2 keep cards with unfinished PC price data on the regular scan cadence as well. When the final refresh attempt still returns `updating`, the worker reports completion of that attempt sequence and the server reschedules the card after `min_scan_seconds` (65 by default), rather than waiting for its five-minute abandoned-lease timeout. That retry interval remains protected against duplicate leases and spare-capacity scans. This does not establish availability or mark an unfinished response as a completed price scan; ready data restores normal processing. Shared cooldowns still apply to every card.

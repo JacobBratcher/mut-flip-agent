@@ -91,6 +91,7 @@ def serve(agent, port):
                                         "request_budget_version": 1,
                                         "worker_tracking_version": 1,
                                         "scan_diagnostics_version": 1,
+                                        "scan_cadence_version": 1,
                                         "interval_ms": int(60000 / rpm)})
             if u.path == "/queue":
                 n = min(10, max(1, int(parse_qs(u.query).get("n", ["5"])[0])))
@@ -173,6 +174,8 @@ def serve(agent, port):
                             result = ("refreshing" if status == 200 and body.get("refreshing") is True
                                       else f"http_{status}" if outcome == "http" else outcome)
                             agent.scan_tracking.attempt(uid, self._worker_id(), result, time.time())
+                            if result == "refreshing" and body.get("retry_exhausted") is True:
+                                agent.db.defer_refresh(uid, time.time() + agent.cfg.get("min_scan_seconds", 65))
                 return self._send(200, feedback)
             if u.path == "/ingest":
                 uid, data = body.get("uid"), body.get("data")

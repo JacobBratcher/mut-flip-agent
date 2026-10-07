@@ -203,3 +203,32 @@ def test_api_error_feedback_backs_off_and_persists_card_diagnostics(tmp_path, mo
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_unfinished_cards_resume_normal_cadence_without_fresh_scan(tmp_path, monkeypatch):
+    monkeypatch.setenv('DATA_DIR', str(tmp_path))
+    now = 1_800_000_000
+    monkeypatch.setattr('app.feeder.time.time', lambda: now)
+    agent = main.Agent(DEFAULTS | {'discord_webhook_url': 'x', 'feeder_token': 'secret',
+                                  'fill_scan_capacity': True, 'min_scan_seconds': 65})
+    agent.discord = Disc()
+    agent.db.upsert_item('27-1')
+    agent.db.c.execute('UPDATE items SET last_success=?', (now - 1000,))
+    agent.db.lease_due(1, 300)
+    httpd = feeder.serve(agent, 0)
+    port = httpd.server_address[1]
+    try:
+        payload = {'status': 200, 'uid': '27-1', 'refreshing': True}
+        call(port, 'POST', '/request-result', payload, worker_id='worker8')
+        assert agent.db.item('27-1')['lease_until'] == now + 300
+        call(port, 'POST', '/request-result', payload | {'retry_exhausted': True}, worker_id='worker8')
+        row = agent.db.item('27-1')
+        assert row['next_check'] == row['lease_until'] == now + 65
+        assert row['last_success'] == now - 1000
+        assert agent.scan_tracking.summary(now)['completed_checks_last_5m'] == 0
+        assert agent.db.lease_due(1, 300, True) == []
+        now += 66
+        assert [r['uid'] for r in agent.db.lease_due(1, 300, True)] == ['27-1']
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
