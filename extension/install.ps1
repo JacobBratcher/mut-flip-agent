@@ -6,11 +6,13 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $instance = if ($env:MUT_FEEDER_INSTANCE) { $env:MUT_FEEDER_INSTANCE.ToLowerInvariant() } else { 'primary' }
-if ($instance -notin @('primary', 'secondary')) { throw 'MUT_FEEDER_INSTANCE must be primary or secondary.' }
-# Separate roots ensure the legacy primary keeper cannot mistake worker 2 for
-# its own browser. Never reuse a personal browser's profile or cookies.
-$rootName = if ($instance -eq 'primary') { 'MUTFlipFeeder' } else { 'MUTFlipWorker2' }
-$shortcutName = if ($instance -eq 'primary') { 'MUT Flip Feeder' } else { 'MUT Flip Feeder 2' }
+if ($instance -eq 'primary') { $instanceNumber = 1 }
+elseif ($instance -eq 'secondary') { $instanceNumber = 2 }
+elseif ($instance -match '^worker([3-9]|1[0-6])$') { $instanceNumber = [int]$Matches[1] }
+else { throw 'MUT_FEEDER_INSTANCE must be primary, secondary, or worker3 through worker16.' }
+# Keep the legacy primary path, with isolated roots for every other profile.
+$rootName = if ($instanceNumber -eq 1) { 'MUTFlipFeeder' } else { "MUTFlipWorker$instanceNumber" }
+$shortcutName = if ($instanceNumber -eq 1) { 'MUT Flip Feeder' } else { "MUT Flip Feeder $instanceNumber" }
 $root = Join-Path $env:LOCALAPPDATA $rootName
 $ext = Join-Path $root 'extension'
 $profileDir = Join-Path $root 'profile'
@@ -21,7 +23,7 @@ $Token = $env:MUT_FEEDER_TOKEN
 $useRelay = $env:MUT_FEEDER_LAN_RELAY -eq '1'
 # Re-running? Reuse the URL and token from the last install.
 $saved = Join-Path $ext 'config.json'
-if ($instance -eq 'secondary' -and -not (Test-Path $saved)) {
+if ($instance -ne 'primary' -and -not (Test-Path $saved)) {
     $saved = Join-Path $env:LOCALAPPDATA 'MUTFlipFeeder\extension\config.json'
 }
 $old = $null

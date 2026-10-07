@@ -31,10 +31,12 @@ def serve(agent, port):
         def log_message(self, *a):
             pass
 
-        def _activity(self, route, items=0, result=None, accepted=False):
+        def _worker_id(self):
             worker_id = self.headers.get("X-Feeder-Id", "legacy")
-            if not re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", worker_id):
-                worker_id = "unknown"
+            return worker_id if re.fullmatch(r"[a-zA-Z0-9_-]{1,40}", worker_id) else "unknown"
+
+        def _activity(self, route, items=0, result=None, accepted=False):
+            worker_id = self._worker_id()
             key = (self.client_address[0], self.headers.get("User-Agent", "")[:200],
                    self.headers.get("X-Feeder-Version", "unknown")[:30], worker_id)
             with clients_lock:
@@ -43,7 +45,7 @@ def serve(agent, port):
                                                   "first_seen": time.time(), "last_ingest_at": 0,
                                                   "results": {}, "routes": {}})
                 clients.move_to_end(key)
-                if len(clients) > 16:
+                if len(clients) > 64:
                     clients.popitem(last=False)
                 metric = client["routes"].setdefault(route, {"calls": 0, "items": 0, "last_at": 0})
                 metric["calls"] += 1
@@ -149,7 +151,7 @@ def serve(agent, port):
                 return self._send(200, agent.api.budget.snapshot())
             if u.path == "/request-permit":
                 self._activity("request-permit")
-                return self._send(200, agent.api.budget.acquire())
+                return self._send(200, agent.api.budget.acquire(self._worker_id()))
             if u.path == "/request-result":
                 status = body.get("status")
                 if type(status) is not int or not 0 <= status <= 599:
@@ -158,7 +160,7 @@ def serve(agent, port):
                 if outcome not in ("http", "timeout", "network_error") or (outcome != "http" and status != 0):
                     return self._send(400, {"error": "invalid result outcome"})
                 self._activity("request-result", result=f"http_{status}" if outcome == "http" else outcome)
-                return self._send(200, agent.api.budget.record(status, body.get("retry_after")))
+                return self._send(200, agent.api.budget.record(status, body.get("retry_after"), outcome))
             if u.path == "/ingest":
                 uid, data = body.get("uid"), body.get("data")
                 if not isinstance(uid, str) or not isinstance(data, dict):
