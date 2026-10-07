@@ -4,6 +4,7 @@ Uses the channel's official RSS feed, and falls back to reading the channel's
 Videos tab when YouTube's feed is flaky (it intermittently answers 404/500).
 """
 import html
+import json
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -84,28 +85,45 @@ def parse_feed(xml_text) -> list[Video]:
 
 
 def parse_videos_tab(page, channel="") -> list[Video]:
-    """Newest-first uploads from a channel's /videos page (YouTube's 2025+ lockup layout)."""
+    """Decode the embedded upload data without regex backtracking over HTML.
+
+    YouTube adds fields between metadata entries. The former cross-page regex
+    could spend minutes retrying its wildcards and hold the GIL, stalling the
+    feeder HTTP threads too. JSON decoding and an iterative walk are bounded by
+    the page size and keep each title attached to its own video ID.
+    """
     name = re.search(r'<meta property="og:title" content="([^"]+)"', page)
     channel = channel or (html.unescape(name.group(1)) if name else "")
-    out, seen = [], set()
-    pat = (r'"lockupMetadataViewModel":\{"title":\{"content":"(.*?)"\}.*?"metadataParts":'
-           r'\[\{"text":\{"content":"[^"]*"\}\},\{"text":\{"content":"([^"]*ago)"')
-    for m in re.finditer(pat, page):
-        ids = re.findall(r'"videoId":"([\w-]{11})"', page[max(0, m.start() - 8000):m.start()])
-        if not ids or ids[-1] in seen:
-            continue
-        seen.add(ids[-1])
-        title = json_unescape(m.group(1))
-        out.append(Video(ids[-1], title, channel, None, m.group(2)))
-    return out
-
-
-def json_unescape(s):
+    marker = re.search(r'(?:\bytInitialData|window\["ytInitialData"\])\s*=\s*', page)
+    if not marker:
+        return []
     try:
-        import json
-        return json.loads(f'"{s}"')
-    except ValueError:
-        return s
+        data, _ = json.JSONDecoder().raw_decode(page, marker.end())
+    except (ValueError, RecursionError):
+        return []
+    out, seen, pending = [], set(), [data]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, list):
+            pending.extend(reversed(node))
+            continue
+        if not isinstance(node, dict):
+            continue
+        video = node.get("lockupViewModel")
+        if isinstance(video, dict) and video.get("contentType") == "LOCKUP_CONTENT_TYPE_VIDEO":
+            uid = video.get("contentId", "")
+            meta = video.get("metadata", {}).get("lockupMetadataViewModel", {})
+            title = meta.get("title", {}).get("content", "")
+            rows = meta.get("metadata", {}).get("contentMetadataViewModel", {}).get("metadataRows", [])
+            age = next((part.get("text", {}).get("content", "")
+                        for row in rows for part in row.get("metadataParts", [])
+                        if part.get("text", {}).get("content", "").endswith("ago")), "")
+            if re.fullmatch(r"[\w-]{11}", uid) and title and uid not in seen:
+                seen.add(uid)
+                out.append(Video(uid, title, channel, None, age))
+            continue
+        pending.extend(reversed(list(node.values())))
+    return out
 
 
 def latest(session: requests.Session, channel_id: str) -> list[Video]:
