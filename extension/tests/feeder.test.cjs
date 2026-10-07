@@ -4,9 +4,9 @@ const { readFileSync } = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-function background(responses, overrides = {}) {
+function background(responses, overrides = {}, workerId = 'primary') {
   let now = 1800000000000;
-  const calls = [], storage = { enabled: true, agentUrl: 'http://agent', token: 'secret' };
+  const calls = [], storage = { enabled: true, agentUrl: 'http://agent', token: 'secret', workerId };
   const noop = () => {};
   const event = { addListener: noop };
   const context = vm.createContext({
@@ -23,13 +23,13 @@ function background(responses, overrides = {}) {
       } },
       alarms: { create: noop, onAlarm: event },
       runtime: { onStartup: event, onInstalled: event, onMessage: event,
-                 getManifest: () => ({ version: '1.4.1' }) },
+                 getManifest: () => ({ version: '1.5.0' }) },
       tabs: { sendMessage: async () => { calls.push('mut.gg'); return responses.shift(); } },
     },
     fetch: async (url, options) => {
       const endpoint = new URL(url).pathname;
       const body = JSON.parse(options.body || '{}');
-      calls.push({ endpoint, body, version: options.headers['X-Feeder-Version'] });
+      calls.push({ endpoint, body, version: options.headers['X-Feeder-Version'], workerId: options.headers['X-Feeder-Id'] });
       const defaults = {
         '/request-permit': { allowed: true, blocked: false, wait_ms: 0, rpm: 32 },
         '/request-result': { wait_ms: body.status === 429 ? 7200000 : 0 },
@@ -52,7 +52,7 @@ test('every refresh retry obtains a permit and reports its result before ingest'
   ]);
   assert.equal(fixture.storage.stats.requests, 2);
   assert.equal(fixture.storage.stats.checks, 1);
-  assert.ok(fixture.calls.filter(c => c.endpoint).every(c => c.version === '1.4.1'));
+  assert.ok(fixture.calls.filter(c => c.endpoint).every(c => c.version === '1.5.0' && c.workerId === 'primary'));
 });
 
 test('exhausted updating responses never count as fresh checks', async () => {
@@ -75,6 +75,16 @@ test('shared cooldown prevents a browser request', async () => {
   const fixture = background([], { '/request-permit': { allowed: false, blocked: true, wait_ms: 60000 } });
   assert.equal((await fixture.run()).kind, 'blocked');
   assert.equal(fixture.calls.includes('mut.gg'), false);
+});
+
+test('secondary profile tags every request and reports timeout separately without ingesting', async () => {
+  const fixture = background([{status: -1}], {}, 'secondary');
+  assert.equal((await fixture.run()).kind, 'timeout');
+  assert.ok(fixture.calls.filter(c => c.endpoint).every(c => c.workerId === 'secondary'));
+  const feedback = fixture.calls.find(c => c.endpoint === '/request-result').body;
+  assert.equal(feedback.status, 0);
+  assert.equal(feedback.outcome, 'timeout');
+  assert.equal(fixture.calls.some(c => c.endpoint === '/ingest'), false);
 });
 
 test('a broken permit service fails closed', async () => {

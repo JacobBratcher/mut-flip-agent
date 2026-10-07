@@ -17,10 +17,13 @@ class Disc(FakeDiscord):
         self.listings.append((name, d))
 
 
-def call(port, method, path, body=None, token="secret"):
+def call(port, method, path, body=None, token="secret", worker_id=None):
+    headers = {"X-Feeder-Token": token, "Content-Type": "application/json"}
+    if worker_id is not None:
+        headers["X-Feeder-Id"] = worker_id
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method,
                                  data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"X-Feeder-Token": token, "Content-Type": "application/json"})
+                                 headers=headers)
     try:
         with urllib.request.urlopen(req) as r:
             return r.status, json.loads(r.read())
@@ -134,5 +137,45 @@ def test_refreshing_snapshot_cannot_alert_or_count_as_fresh(tmp_path, monkeypatc
         monkeypatch.setattr(main.time, "time", lambda: verified_at)
         assert call(port, "POST", "/ingest", {"uid": "27-1", "data": data})[1]["ok"]
         assert len(agent.discord.listings) == 1
+    finally:
+        httpd.shutdown()
+
+
+def test_two_sessions_share_leases_permits_and_cooldowns_but_have_separate_health(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    monkeypatch.setenv('DATA_DIR', str(tmp_path))
+    agent = main.Agent(DEFAULTS | {'discord_webhook_url': 'x', 'feeder_token': 'secret',
+                                  'http_requests_per_minute': 16})
+    agent.discord = Disc()
+    for uid in ('27-1', '27-2'):
+        agent.db.upsert_item(uid)
+    now = [1_800_000_000.0]
+    agent.api.budget.clock = lambda: now[0]
+    httpd = feeder.serve(agent, 0)
+    port = httpd.server_address[1]
+    workers = ['primary', 'secondary']
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            leased = list(pool.map(lambda w: call(port, 'GET', '/queue?n=1', worker_id=w)[1]['items'][0]['uid'], workers))
+            permits = list(pool.map(lambda w: call(port, 'POST', '/request-permit', {}, worker_id=w)[1], workers))
+        assert set(leased) == {'27-1', '27-2'}
+        assert sum(p['allowed'] for p in permits) == 1  # 16 total, never 16 per session
+        now[0] += 3.75
+        assert call(port, 'POST', '/request-permit', {}, worker_id='secondary')[1]['allowed']
+        assert call(port, 'POST', '/request-result', {'status': 0, 'outcome': 'timeout'}, worker_id='secondary')[0] == 200
+        assert agent.api.budget.refusals == 0
+        assert call(port, 'POST', '/request-result', {'status': 403, 'outcome': 'timeout'}, worker_id='secondary')[0] == 400
+        assert call(port, 'POST', '/ingest', {'uid': leased[0], 'data': {'pricesData': {}}}, worker_id='primary')[1]['ok']
+        assert not call(port, 'POST', '/ingest', {'uid': leased[1], 'data': {'updating': True}}, worker_id='secondary')[1]['ok']
+        health = call(port, 'GET', '/health')[1]
+        clients = {c['worker_id']: c for c in health['clients']}
+        assert clients['primary']['last_ingest_at'] > 0
+        assert clients['secondary']['last_ingest_at'] == 0
+        assert clients['secondary']['results'] == {'timeout': 1}
+        assert 'secret' not in json.dumps(health)
+        call(port, 'POST', '/request-result', {'status': 429, 'retry_after': '7200'}, worker_id='primary')
+        other = call(port, 'POST', '/request-permit', {}, worker_id='secondary')[1]
+        assert other['blocked'] and not other['allowed'] and other['wait_ms'] == 7200000
+        assert agent.api.budget.refusals == 1
     finally:
         httpd.shutdown()
