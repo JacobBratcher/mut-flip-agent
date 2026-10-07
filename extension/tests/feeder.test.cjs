@@ -189,6 +189,7 @@ test('refresh telemetry identifies card without sharing the price payload', asyn
   await fixture.run();
   const reports=fixture.calls.filter(c=>c.endpoint==='/request-result').map(c=>c.body);
   assert.deepEqual(reports.map(r=>r.refreshing),[true,false]);
+  assert.deepEqual(reports.map(r=>r.retry_exhausted),[false,false]);
   assert.ok(reports.every(r=>r.uid==='27-1' && !('data' in r)));
 });
 
@@ -198,6 +199,7 @@ test('known stuck cards use one permitted probe and recover when data is ready',
   assert.equal((await pending.run()).kind,'pending');
   assert.equal(pending.calls.filter(c=>c==='mut.gg').length,1);
   assert.equal(pending.calls.some(c=>c.endpoint==='/ingest'),false);
+  assert.equal(pending.calls.find(c=>c.endpoint==='/request-result').body.retry_exhausted,true);
   const ready = background([{status:200,data:{pricesData:{}}}], {}, 'primary', {uid:'27-1',refresh_retries:0});
   assert.equal((await ready.run()).kind,'ok');
   assert.equal(ready.storage.stats.checks,1);

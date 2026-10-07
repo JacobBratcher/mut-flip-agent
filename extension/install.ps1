@@ -59,8 +59,8 @@ try {
 } catch {
     Write-Host "  Can't reach the agent or the token is wrong: $($_.Exception.Message)" -ForegroundColor Yellow
 }
-if ($cfg.worker_tracking_version -ne 1 -or $cfg.scan_diagnostics_version -ne 1) {
-    throw 'A reachable MUT Flip Agent 1.14.0 or later is required for per-worker health checks.'
+if ($cfg.worker_tracking_version -ne 1 -or $cfg.scan_diagnostics_version -ne 1 -or $cfg.scan_cadence_version -ne 1) {
+    throw 'A reachable MUT Flip Agent 1.14.2 or later is required for per-worker health checks.'
 }
 
 # 2. Chromium. Regular Chrome no longer lets a script load an unpacked extension.
@@ -97,7 +97,7 @@ if (-not $srcExt) { throw 'The download did not contain the extension folder. Tr
 # Validate the download before stopping the working feeder.
 $downloadManifest = Get-Content (Join-Path $srcExt.FullName 'manifest.json') -Raw | ConvertFrom-Json
 $downloadWorker = Get-Content (Join-Path $srcExt.FullName 'background.js') -Raw
-if ([version]$downloadManifest.version -lt [version]'1.6.1' -or $downloadWorker -notmatch 'X-Feeder-Id') {
+if ([version]$downloadManifest.version -lt [version]'1.6.2' -or $downloadWorker -notmatch 'X-Feeder-Id') {
     throw 'Downloaded feeder is missing the updated scanning worker. Existing feeder was not stopped.'
 }
 . (Join-Path $srcExt.FullName 'worker-state.ps1')

@@ -154,6 +154,7 @@ async function checkOne(tab, it, cfg) {
     const feedback = await agent("POST", "/request-result", {
       status: Math.max(0, res?.status || 0), retry_after: res?.retry_after,
       uid: it.uid, refreshing: res?.data?.updating === true,
+      retry_exhausted: res?.data?.updating === true && attempt === retryLimit,
       outcome: res?.outcome === "api_error" ? "api_error" : res?.status === -1 ? "timeout" : res?.status === 0 ? "network_error" : "http",
     });
     if (res && res.status !== 200) {
