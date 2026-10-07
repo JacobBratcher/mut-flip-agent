@@ -102,6 +102,7 @@ def serve(agent, port):
             if u.path == "/scan-report":
                 with agent.lock:
                     report = agent.scan_tracking.summary(time.time(), limit=100)
+                    report["cards"] = agent.scan_tracking.coverage(time.time())
                 return self._send(200, report)
             if u.path == "/health":
                 # Used by the desktop keeper's watchdog: seconds since prices last arrived

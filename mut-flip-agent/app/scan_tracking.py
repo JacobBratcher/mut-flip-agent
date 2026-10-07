@@ -85,6 +85,20 @@ class ScanTracking:
             self.next_prune = now + 3600
         c.commit()
 
+    def coverage(self, now, limit=200):
+        """Bounded card diagnostics; never include price payloads or credentials."""
+        rows = self.db.c.execute(
+            'SELECT uid,name,tier,last_success,last_check,next_check,lease_until FROM items '
+            'ORDER BY last_success,uid LIMIT ?', (limit,)).fetchall()
+        return [{'uid': r['uid'], 'name': r['name'], 'tier': r['tier'],
+                 'scan_age_seconds': round(max(0, now - r['last_success']), 1)
+                 if r['last_success'] else None,
+                 'last_scheduled_seconds_ago': round(max(0, now - r['last_check']), 1)
+                 if r['last_check'] else None,
+                 'next_due_seconds': round(max(0, r['next_check'] - now), 1),
+                 'lease_remaining_seconds': round(max(0, r['lease_until'] - now), 1)}
+                for r in rows]
+
     def summary(self, now, limit=25):
         c = self.db.c
         counts = {r['reason']: r['n'] for r in c.execute(
@@ -106,7 +120,9 @@ class ScanTracking:
                 'completed_checks_per_minute_5m': round(checks / 5, 2),
                 'median_scan_age_seconds': round(median(ages), 1) if ages else None,
                 'oldest_scan_age_seconds': round(max(ages), 1) if ages else None,
-                'cards_without_baseline': total - len(ages), 'recent': recent,
+                'cards_without_baseline': total - len(ages),
+                'cards_scanned_last_60s': sum(age <= 60 for age in ages),
+                'cards_stale_over_5m': sum(age > 300 for age in ages), 'recent': recent,
                 'caveat': 'Estimated sold times and price matches cannot identify an auction or prove a missed purchase. '
                           'Same-price sales within 10 minutes are conservatively deduplicated. '
                           'Tracking begins at each card\'s first successful scan; absent source sales cannot be counted.'}
