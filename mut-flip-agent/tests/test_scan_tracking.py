@@ -202,3 +202,22 @@ def test_reporting_network_wait_does_not_block_feeder(tmp_path, monkeypatch):
         release.set()
         thread.join(2)
         httpd.shutdown()
+
+
+def test_coverage_exposes_stale_missing_and_leased_cards(tmp_path):
+    db, tracker, cfg = setup(tmp_path)
+    for uid in ['missing', 'stale', 'recent']:
+        db.upsert_item(uid)
+    db.c.execute("UPDATE items SET last_success=? WHERE uid='stale'", (NOW - 3600,))
+    db.c.execute("UPDATE items SET last_success=?,lease_until=?,next_check=? WHERE uid='recent'",
+                 (NOW - 30, NOW + 250, NOW + 250))
+    report = tracker.summary(NOW)
+    assert report['cards_scanned_last_60s'] == 1
+    assert report['cards_stale_over_5m'] == 1
+    assert report['cards_without_baseline'] == 2
+    cards = {r['uid']: r for r in tracker.coverage(NOW)}
+    assert cards['missing']['scan_age_seconds'] is None
+    assert cards['stale']['scan_age_seconds'] == 3600
+    assert cards['recent']['lease_remaining_seconds'] == 250
+    assert cards['recent']['next_due_seconds'] == 250
+    assert len(tracker.coverage(NOW, limit=2)) == 2
