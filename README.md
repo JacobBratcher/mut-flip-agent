@@ -152,7 +152,7 @@ What the author's instance actually runs, set in the add-on's Configuration tab 
 |---|---|---|
 | Add-on / feeder | 1.13.0 / extension 1.5.1 | |
 | `requests_per_minute` (planner) | 90 | 20 |
-| `http_requests_per_minute` (adaptive upper bound) | 120; actual budget ramps with successful requests | 40 |
+| `http_requests_per_minute` (adaptive upper bound) | 90; actual budget ramps with successful requests | 40 |
 | `worker_requests_per_minute` (per profile) | 16 | 16 |
 | `fill_scan_capacity` / `min_scan_seconds` | true / 65 | false / 65 |
 | `min_ovr` | 88 (89 cards at the last discovery) | 85 |
