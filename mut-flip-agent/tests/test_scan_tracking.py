@@ -221,3 +221,20 @@ def test_coverage_exposes_stale_missing_and_leased_cards(tmp_path):
     assert cards['recent']['lease_remaining_seconds'] == 250
     assert cards['recent']['next_due_seconds'] == 250
     assert len(tracker.coverage(NOW, limit=2)) == 2
+
+
+def test_attempt_diagnostics_survive_restart_without_claiming_fresh_scan(tmp_path):
+    db, tracker, cfg = setup(tmp_path)
+    tracker.attempt('27-1', 'worker8', 'refreshing', NOW)
+    tracker.attempt('27-1', 'worker3', 'api_error', NOW + 10)
+    db.c.close()
+    db = DB(tmp_path / 'mut.db')
+    tracker = ScanTracking(db)
+    card = tracker.coverage(NOW + 20)[0]
+    assert card['scan_age_seconds'] is None
+    assert card['last_attempt_age_seconds'] == 10
+    assert card['last_outcome'] == 'api_error'
+    assert card['last_worker'] == 'worker3'
+    assert card['requests_observed'] == 2
+    assert card['refreshing_responses'] == 1
+    assert tracker.summary(NOW + 20)['completed_checks_last_5m'] == 0

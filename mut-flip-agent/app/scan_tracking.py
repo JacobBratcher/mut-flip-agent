@@ -6,6 +6,10 @@ from . import analysis
 from .db import SAME_SALE_SECONDS
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS scan_attempts (
+    uid TEXT PRIMARY KEY, attempted_at REAL, worker_id TEXT, outcome TEXT,
+    requests INTEGER, refreshing INTEGER
+);
 CREATE TABLE IF NOT EXISTS scan_observations (
     uid TEXT, scanned_at REAL, PRIMARY KEY(uid, scanned_at)
 );
@@ -82,21 +86,35 @@ class ScanTracking:
             c.execute('DELETE FROM scan_observations WHERE scanned_at<?', (now - 7 * 86400,))
             c.execute('DELETE FROM missed_opportunities WHERE detected_at<?', (now - 35 * 86400,))
             c.execute('DELETE FROM scan_baselines WHERE uid NOT IN (SELECT uid FROM items)')
+            c.execute('DELETE FROM scan_attempts WHERE uid NOT IN (SELECT uid FROM items)')
             self.next_prune = now + 3600
         c.commit()
+
+    def attempt(self, uid, worker_id, outcome, now):
+        self.db.c.execute(
+            'INSERT INTO scan_attempts VALUES(?,?,?,?,1,?) ON CONFLICT(uid) DO UPDATE SET '
+            'attempted_at=excluded.attempted_at,worker_id=excluded.worker_id,outcome=excluded.outcome,'
+            'requests=scan_attempts.requests+1,refreshing=scan_attempts.refreshing+excluded.refreshing',
+            (uid, now, worker_id, outcome, int(outcome == 'refreshing')))
+        self.db.c.commit()
 
     def coverage(self, now, limit=200):
         """Bounded card diagnostics; never include price payloads or credentials."""
         rows = self.db.c.execute(
-            'SELECT uid,name,tier,last_success,last_check,next_check,lease_until FROM items '
-            'ORDER BY last_success,uid LIMIT ?', (limit,)).fetchall()
+            'SELECT i.uid,name,tier,last_success,last_check,next_check,lease_until,'
+            'attempted_at,worker_id,outcome,requests,refreshing FROM items i '
+            'LEFT JOIN scan_attempts a ON a.uid=i.uid ORDER BY last_success,i.uid LIMIT ?', (limit,)).fetchall()
         return [{'uid': r['uid'], 'name': r['name'], 'tier': r['tier'],
                  'scan_age_seconds': round(max(0, now - r['last_success']), 1)
                  if r['last_success'] else None,
                  'last_scheduled_seconds_ago': round(max(0, now - r['last_check']), 1)
                  if r['last_check'] else None,
                  'next_due_seconds': round(max(0, r['next_check'] - now), 1),
-                 'lease_remaining_seconds': round(max(0, r['lease_until'] - now), 1)}
+                 'lease_remaining_seconds': round(max(0, r['lease_until'] - now), 1),
+                 'last_attempt_age_seconds': round(max(0, now - r['attempted_at']), 1)
+                 if r['attempted_at'] else None,
+                 'last_worker': r['worker_id'], 'last_outcome': r['outcome'],
+                 'requests_observed': r['requests'] or 0, 'refreshing_responses': r['refreshing'] or 0}
                 for r in rows]
 
     def summary(self, now, limit=25):

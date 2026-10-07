@@ -58,7 +58,7 @@ Cards at `min_ovr` (default 85) and up are discovered from mut.gg's player list 
 
 **Card scheduling budget (`requests_per_minute`, default 20):** the agent keeps 15% headroom, so 20/min is about 24,500 checks/day. The budget is shared in this order: watchlist, then new releases (capped at 60% of what's left), then cold cards (each once per `cold_hours`), and whatever remains decides how many cards fit in the hot tier (`hot cap`, logged every hour as `Poll plan`). If more cards qualify as hot than fit, the lowest-value ones drop to cold. To treat every card the same, set `hot_min_value: 0` and `hot_min_daily_sales: 0` so every card with recent sales qualifies.
 
-**Use spare scan capacity:** enable `fill_scan_capacity` to scan the oldest completed snapshot when no scheduled card is due. Watch/new-release priorities still win when due. `min_scan_seconds` (default/minimum 65) prevents the spare-capacity path from repeatedly fetching the same source cache. Explicit leases prevent the four browser workers from receiving the same card. Abandoned leases expire; unfinished refreshes keep their retry delay. This does not remove the shared HTTP gate or reset its learned limit. The existing scheduling budget remains a planning estimate, not a second HTTP throttle.
+**Use spare scan capacity:** enable `fill_scan_capacity` to scan the oldest completed snapshot when no scheduled card is due. Watch/new-release priorities still win when due. `min_scan_seconds` (default/minimum 65) prevents the spare-capacity path from repeatedly fetching the same source cache. Explicit leases prevent concurrent browser workers from receiving the same card. Abandoned leases expire; unfinished refreshes keep their retry delay. This does not remove the shared HTTP gate or reset its learned limit. The existing scheduling budget remains a planning estimate, not a second HTTP throttle.
 
 **Measure actual coverage:** authenticated `GET /scan-report` lists completed scans/minute over the last five minutes, median/oldest scan age, cards still establishing a baseline, and recent estimated missed opportunities. `/health` includes the aggregate scan metrics. Home Assistant exposes **Completed scans per minute** and **Likely missed snipes 24h**; the latter's attributes include the detailed report. Five-minute throughput includes startup idle time until the first five-minute window is complete.
 
@@ -108,7 +108,7 @@ Re-run it any time to update (it remembers the URL and token). Over RDP, **disco
 
 ### Independent feeder instances
 
-Server 1.13.0 and extension 1.5.1 support up to 16 long-lived Chromium instances with separate browser profiles, cookies, settings, logs, and keepers. Update the primary installation normally, then install the second instance:
+Server 1.14.0 and extension 1.6.0 support up to 16 long-lived Chromium instances with separate browser profiles, cookies, settings, logs, and keepers. Update the primary installation normally, then install the second instance:
 
 ```powershell
 $env:MUT_FEEDER_INSTANCE = 'secondary'
@@ -121,11 +121,11 @@ try {
 
 For additional instances, use `MUT_FEEDER_INSTANCE=worker3` through `worker16` with the same installer. Each gets its own `MUTFlipWorkerN` root and numbered startup/desktop shortcut. Add profiles gradually and verify successful scans from each worker ID in `/health`.
 
-Each browser is additionally paced by `worker_requests_per_minute` (default 16). Six profiles can provide up to 96 requests/minute in aggregate, always constrained by the shared adaptive ceiling and actual site responses. Three timeouts/network failures or transient server errors within 60 seconds trigger a shared one-minute cooldown, reduce the pace by 25%, and lower its learned limit. Saved pacing and cooldowns survive restarts. One isolated timeout resets the success streak without immediately stopping healthy sessions.
+Each browser is additionally paced by `worker_requests_per_minute` (default 16). Twelve profiles can provide up to 192 requests/minute in aggregate, always constrained by the shared adaptive ceiling and actual site responses. Three timeouts/network failures or transient server errors within 60 seconds trigger a shared one-minute cooldown, reduce the pace by 25%, and lower its learned limit. Saved pacing and cooldowns survive restarts. One isolated timeout resets the success streak without immediately stopping healthy sessions.
 
 The second instance uses `%LOCALAPPDATA%\MUTFlipWorker2` and a **MUT Flip Feeder 2** startup/desktop shortcut. Its first install copies the saved agent connection settings from the primary instance, while creating a new browser profile. Reinstall each instance separately when changing the shared token. The existing primary profile stays at `%LOCALAPPDATA%\MUTFlipFeeder\profile`.
 
-All workers lease different cards from one queue and obtain permits from the same global request budget. A 16 requests/minute ceiling means **16 total**, not 16 per instance. Site refusals and Retry-After pauses apply to both. Separate sessions can keep useful work moving when a browser hangs, but do not establish a higher allowed request rate. Roughly one scan per minute across 89 cards needs roughly 89 successful requests/minute plus retries; the 65-second spare-scan minimum avoids repeatedly polling the same card immediately.
+All workers lease different cards from one queue and obtain permits from the same global request budget. A 16 requests/minute ceiling means **16 total**, not 16 per instance. Site refusals and Retry-After pauses apply to all workers. Separate sessions can keep useful work moving when a browser hangs, but do not establish a higher allowed request rate. Roughly one scan per minute across 158 cards needs roughly 158 successful requests/minute plus retries; the 65-second spare-scan minimum avoids repeatedly polling the same card immediately.
 
 Authenticated `/health` identifies `primary` and `secondary` workers and reports each one's successful-ingest timestamp and result counts, including `timeout`, `network_error`, and HTTP statuses. Each keeper evaluates its own worker's progress, so a healthy sibling cannot hide a stalled instance. The optional loopback relay is shared by both keepers.
 
@@ -144,18 +144,18 @@ Manual install instead: `chrome://extensions` → Developer mode → **Load unpa
 
 **Tip:** in Discord, set the alert channel's notifications to *All Messages* so alerts buzz your phone instantly.
 
-## Current live setup (Oct 5, 2026)
+## 87+ rollout configuration (Oct 7, 2026)
 
-What the author's instance actually runs, set in the add-on's Configuration tab (code defaults are described above):
+Deployment target for the 87+ rollout. Confirm the active pace and worker versions in `/health`; a configured ceiling is not a measured sustainable rate.
 
-| Setting | Live value | Default |
+| Setting | Rollout target | Default |
 |---|---|---|
-| Add-on / feeder | 1.13.0 / extension 1.5.1 | |
-| `requests_per_minute` (planner) | 90 | 20 |
-| `http_requests_per_minute` (adaptive upper bound) | 90; actual budget ramps with successful requests | 40 |
+| Add-on / feeder | 1.14.0 / extension 1.6.0 | |
+| `requests_per_minute` (planner) | 180 | 20 |
+| `http_requests_per_minute` (adaptive upper bound) | 180; actual budget ramps with successful requests | 40 |
 | `worker_requests_per_minute` (per profile) | 16 | 16 |
 | `fill_scan_capacity` / `min_scan_seconds` | true / 65 | false / 65 |
-| `min_ovr` | 88 (89 cards at the last discovery) | 85 |
+| `min_ovr` | 87 (158 cards at the last discovery) | 85 |
 | `tiers.hot_min_value` / `hot_min_daily_sales` | 0 / 0 (no hot filter: every card with sales qualifies) | 25,000 / 5 |
 | `tiers.hot_minutes` | 6 | 10 |
 | `tiers.cold_hours` | 1 | 24 |
@@ -164,7 +164,7 @@ What the author's instance actually runs, set in the add-on's Configuration tab 
 
 The browser queue uses three priority leases followed by two oldest-overdue leases. This 60/40 allocation persists across single-card requests and restarts, so a reduced HTTP budget cannot indefinitely starve older cards behind constantly due fresh releases. Outstanding card leases still prevent duplicate concurrent scans.
 
-New releases retain priority for their first week. Hot cards target six minutes when the budget allows; spare capacity revisits the oldest eligible cards. Actual completed scans are reported separately from the adaptive HTTP request budget: refresh retries also consume permits. Narrowing discovery from 86+ to 88+ removed 155 lower-rated cards from the live queue, concentrating the same shared budget on 89 cards. Capacity can recover gradually after a connection repair using the authenticated operator endpoint below; increasing the configured ceiling alone does not erase a learned limit or a cooldown.
+New releases retain priority for their first week. Hot cards target six minutes when the budget allows; spare capacity revisits the oldest eligible cards. Actual completed scans are reported separately from the adaptive HTTP request budget: refresh retries also consume permits. The 87+ discovery currently contains 158 cards. A one-minute completed scan of every card would require at least 158 requests/minute plus refresh retries; cards whose source remains `updating` cannot produce a fresh snapshot regardless of profile count. Capacity can recover gradually after a connection repair using the authenticated operator endpoint below; increasing the configured ceiling alone does not erase a learned limit or a cooldown.
 
 The dedicated Windows Chromium uses Surfshark's Route via VPN; the loopback relay keeps its agent traffic on the LAN. Native Rotating IP was tested and disabled after repeated refusals. Rotation is not required by the feeder, and keeping it off does not guarantee that the site will never issue another challenge. Home Assistant also has an automation that notifies the phone (and Discord, once its `rest_command` is added to `configuration.yaml`) when `sensor.mut_flip_agent_status` is `waiting for feeder` / `blocked` for 15 minutes, and a dashboard badge on the MUT Market button that counts snipes since it was last tapped (`input_datetime.mut_market_last_seen`, `script.mut_market_mark_seen`). Those live in Home Assistant, not in this repo.
 
@@ -200,3 +200,9 @@ After repairing a connection/session problem, an operator can send an authentica
 docker exec -it mut-flip-agent python -m app inspect 27-162004004   # raw price data for one card
 cd mut-flip-agent && python -m pytest -q tests                      # tests
 ```
+
+### Price-response diagnostics
+
+The authenticated `/scan-report` includes up to 200 cards, ordered with missing baselines and oldest successful scans first. Each card reports its latest attempt outcome, worker, cumulative observed requests and refreshing responses, successful scan age, next due time, and remaining lease. Attempt counters survive add-on restarts and never count unfinished refreshes as successful scans. `/health` also counts cards scanned within 60 seconds and cards stale beyond five minutes.
+
+Extension 1.6.0 requires server 1.14.0. JSON API errors or malformed/missing price data returned with HTTP 200 are reported as `api_error` without retaining the error body. Repeated failures use the shared cooldown. Each profile keeps at most two card checks in flight to reduce leases waiting behind its per-worker permit. The configurable aggregate ceiling supports up to 240 requests/minute for larger fleets; defaults and automatic backoff remain unchanged. Increase the live ceiling only in measured stages, and do not reset a learned limit after a refusal merely to keep expanding.

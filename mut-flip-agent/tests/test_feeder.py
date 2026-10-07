@@ -179,3 +179,27 @@ def test_two_sessions_share_leases_permits_and_cooldowns_but_have_separate_healt
         assert agent.api.budget.refusals == 1
     finally:
         httpd.shutdown()
+
+
+def test_api_error_feedback_backs_off_and_persists_card_diagnostics(tmp_path, monkeypatch):
+    monkeypatch.setenv('DATA_DIR', str(tmp_path))
+    agent = main.Agent(DEFAULTS | {'discord_webhook_url': 'x', 'feeder_token': 'secret'})
+    agent.discord = Disc()
+    agent.db.upsert_item('27-1')
+    httpd = feeder.serve(agent, 0)
+    port = httpd.server_address[1]
+    try:
+        for _ in range(3):
+            assert call(port, 'POST', '/request-result',
+                        {'status': 0, 'outcome': 'api_error', 'uid': '27-1'}, worker_id='worker8')[0] == 200
+        health = call(port, 'GET', '/health')[1]
+        assert health['request_budget']['cooldown_seconds'] > 0
+        assert health['request_budget']['network_slowdowns'] == 1
+        assert health['clients'][0]['results']['api_error'] == 3
+        card = call(port, 'GET', '/scan-report')[1]['cards'][0]
+        assert card['last_outcome'] == 'api_error'
+        assert card['requests_observed'] == 3
+        assert card['scan_age_seconds'] is None
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

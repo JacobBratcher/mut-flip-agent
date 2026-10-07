@@ -112,7 +112,7 @@ function bump(field, n = 1) {
 }
 
 // A few cards can refresh concurrently; every HTTP attempt uses the agent's shared gate.
-const MAX_INFLIGHT = 4;
+const MAX_INFLIGHT = 2;
 const UPDATE_WAITS = [1500, 2000, 4000];
 
 // Queue permit waiters within one profile. Without FIFO ordering, its four
@@ -151,7 +151,8 @@ async function checkOne(tab, it, cfg) {
     await bump("requests");
     const feedback = await agent("POST", "/request-result", {
       status: Math.max(0, res?.status || 0), retry_after: res?.retry_after,
-      outcome: res?.status === -1 ? "timeout" : res?.status === 0 ? "network_error" : "http",
+      uid: it.uid, refreshing: res?.data?.updating === true,
+      outcome: res?.outcome === "api_error" ? "api_error" : res?.status === -1 ? "timeout" : res?.status === 0 ? "network_error" : "http",
     });
     if (res && res.status !== 200) {
       // Allowlisted metadata only: no response bodies, URLs, cookies or tokens.

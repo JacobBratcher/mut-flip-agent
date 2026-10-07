@@ -160,3 +160,34 @@ test('permit waiters are FIFO so concurrent checks cannot overtake a waiting car
   assert.deepEqual(results.map(r => r.kind), ['ok', 'ok']);
   assert.equal(permits, 2);
 });
+
+
+test('HTTP 200 API errors and missing data cannot count as completed price scans', async () => {
+  for (const body of [{error: 'private error'}, {data: null}, {data: []}, {data: {}},
+                      {data: {pricesData: []}}, {errors: ['private'], data: {pricesData: {}}}]) {
+    const context = vm.createContext({AbortSignal,
+      chrome: {runtime: {onMessage: {addListener: () => {}}}},
+      fetch: async () => ({ok: true, status: 200, headers: {get: () => 'application/json'}, json: async () => body})});
+    vm.runInContext(readFileSync(path.join(__dirname, '../content.js'), 'utf8'), context);
+    const result = await vm.runInContext("fetchPrices('27-1', 'pc')", context);
+    assert.equal(result.outcome, 'api_error');
+    assert.equal(result.status, 0);
+    assert.equal(result.http_status, 200);
+    assert.equal(result.data, undefined);
+    assert.equal(JSON.stringify(result).includes('private'), false);
+    const fixture = background([result]);
+    await fixture.run();
+    const feedback = fixture.calls.find(c => c.endpoint === '/request-result').body;
+    assert.equal(feedback.outcome, 'api_error');
+    assert.equal(feedback.uid, '27-1');
+    assert.equal(fixture.calls.some(c => c.endpoint === '/ingest'), false);
+  }
+});
+
+test('refresh telemetry identifies card without sharing the price payload', async () => {
+  const fixture = background([{status:200,data:{updating:true}}, {status:200,data:{pricesData:{}}}]);
+  await fixture.run();
+  const reports=fixture.calls.filter(c=>c.endpoint==='/request-result').map(c=>c.body);
+  assert.deepEqual(reports.map(r=>r.refreshing),[true,false]);
+  assert.ok(reports.every(r=>r.uid==='27-1' && !('data' in r)));
+});
