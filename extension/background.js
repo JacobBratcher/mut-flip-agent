@@ -115,7 +115,7 @@ function bump(field, n = 1) {
 const MAX_INFLIGHT = 2;
 const UPDATE_WAITS = [1500, 2000, 4000];
 
-// Queue permit waiters within one profile. Without FIFO ordering, its four
+// Queue permit waiters within one profile. Without FIFO ordering, its concurrent
 // checks race for each slot and an unlucky leased card can expire unscanned.
 let permitLock = Promise.resolve();
 function requestPermit(deadline) {
@@ -139,7 +139,9 @@ async function checkOne(tab, it, cfg) {
   let res;
   // Bound each refresh so it finishes within the server's five-minute card lease.
   const deadline = Date.now() + 85000;
-  for (let attempt = 0; attempt <= UPDATE_WAITS.length; attempt++) {
+  const retryLimit = Number.isInteger(it.refresh_retries)
+    ? Math.max(0, Math.min(UPDATE_WAITS.length, it.refresh_retries)) : UPDATE_WAITS.length;
+  for (let attempt = 0; attempt <= retryLimit; attempt++) {
     const gate = await requestPermit(deadline);
     if (gate.kind !== "permit") return gate;
     try {
@@ -165,7 +167,7 @@ async function checkOne(tab, it, cfg) {
       wait_ms: Math.max(60000, feedback.wait_ms) };
     if (!res || res.status !== 200 || !res.data?.updating) break;
     // Never ingest an unfinished refresh as a successful fresh check.
-    if (attempt === UPDATE_WAITS.length) return { kind: "pending" };
+    if (attempt === retryLimit) return { kind: "pending" };
     await sleep(UPDATE_WAITS[attempt]);
   }
   if (res && res.status === 200 && res.data) {

@@ -238,3 +238,15 @@ def test_attempt_diagnostics_survive_restart_without_claiming_fresh_scan(tmp_pat
     assert card['requests_observed'] == 2
     assert card['refreshing_responses'] == 1
     assert tracker.summary(NOW + 20)['completed_checks_last_5m'] == 0
+
+
+def test_stuck_refresh_retries_are_reduced_and_recover_after_success(tmp_path):
+    db, tracker, cfg = setup(tmp_path)
+    assert tracker.refresh_retries('27-1', NOW) == 3
+    for n in range(8):
+        tracker.attempt('27-1', 'worker3', 'refreshing', NOW + n)
+    assert tracker.refresh_retries('27-1', NOW + 10) == 0
+    record(db, tracker, cfg, NOW + 11)
+    assert tracker.refresh_retries('27-1', NOW + 12) == 3
+    tracker.attempt('27-1', 'worker3', 'http_200', NOW + 11)
+    assert tracker.refresh_retries('27-1', NOW + 1000) == 3

@@ -98,8 +98,11 @@ def serve(agent, port):
                     rows = agent.db.lease_due(n, LEASE_SECONDS,
                                               agent.cfg.get("fill_scan_capacity", False),
                                               agent.cfg.get("min_scan_seconds", 65))
+                    items = [{"uid": r["uid"], "url": r["url"],
+                              "refresh_retries": agent.scan_tracking.refresh_retries(r["uid"], time.time())}
+                             for r in rows]
                 self._activity(f"queue:{n}", len(rows))
-                return self._send(200, {"items": [{"uid": r["uid"], "url": r["url"]} for r in rows]})
+                return self._send(200, {"items": items})
             if u.path == "/scan-report":
                 with agent.lock:
                     report = agent.scan_tracking.summary(time.time(), limit=100)

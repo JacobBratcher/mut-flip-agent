@@ -98,6 +98,17 @@ class ScanTracking:
             (uid, now, worker_id, outcome, int(outcome == 'refreshing')))
         self.db.c.commit()
 
+    def refresh_retries(self, uid, now):
+        # Two complete unsuccessful retry rounds and no recent accepted snapshot
+        # identify a stuck upstream refresh. Probe once per lease until it recovers.
+        row = self.db.c.execute(
+            'SELECT last_success,outcome,refreshing FROM items i '
+            'LEFT JOIN scan_attempts a ON a.uid=i.uid WHERE i.uid=?', (uid,)).fetchone()
+        if (row and row['outcome'] == 'refreshing' and row['refreshing'] >= 8
+                and (not row['last_success'] or now - row['last_success'] >= 300)):
+            return 0
+        return 3
+
     def coverage(self, now, limit=200):
         """Bounded card diagnostics; never include price payloads or credentials."""
         rows = self.db.c.execute(

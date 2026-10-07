@@ -4,13 +4,13 @@ const { readFileSync } = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-function background(responses, overrides = {}, workerId = 'primary') {
+function background(responses, overrides = {}, workerId = 'primary', item = {uid: '27-1'}) {
   let now = 1800000000000;
   const calls = [], storage = { enabled: true, agentUrl: 'http://agent', token: 'secret', workerId };
   const noop = () => {};
   const event = { addListener: noop };
   const context = vm.createContext({
-    console, AbortSignal, Date: class extends Date { static now() { return now; } },
+    console, AbortSignal, item, Date: class extends Date { static now() { return now; } },
     setTimeout: (callback, ms) => {
       if (ms < 25000) { now += ms; queueMicrotask(callback); }
       return 1;
@@ -41,7 +41,7 @@ function background(responses, overrides = {}, workerId = 'primary') {
     },
   });
   vm.runInContext(readFileSync(path.join(__dirname, '../background.js'), 'utf8'), context);
-  return { calls, storage, run: () => vm.runInContext("checkOne(1, {uid: '27-1'}, {platform: 'pc'})", context) };
+  return { calls, storage, run: () => vm.runInContext("checkOne(1, item, {platform: 'pc'})", context) };
 }
 
 test('every refresh retry obtains a permit and reports its result before ingest', async () => {
@@ -190,4 +190,15 @@ test('refresh telemetry identifies card without sharing the price payload', asyn
   const reports=fixture.calls.filter(c=>c.endpoint==='/request-result').map(c=>c.body);
   assert.deepEqual(reports.map(r=>r.refreshing),[true,false]);
   assert.ok(reports.every(r=>r.uid==='27-1' && !('data' in r)));
+});
+
+
+test('known stuck cards use one permitted probe and recover when data is ready', async () => {
+  const pending = background([{status:200,data:{updating:true}}], {}, 'primary', {uid:'27-1',refresh_retries:0});
+  assert.equal((await pending.run()).kind,'pending');
+  assert.equal(pending.calls.filter(c=>c==='mut.gg').length,1);
+  assert.equal(pending.calls.some(c=>c.endpoint==='/ingest'),false);
+  const ready = background([{status:200,data:{pricesData:{}}}], {}, 'primary', {uid:'27-1',refresh_retries:0});
+  assert.equal((await ready.run()).kind,'ok');
+  assert.equal(ready.storage.stats.checks,1);
 });
