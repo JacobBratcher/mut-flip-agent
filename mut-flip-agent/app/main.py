@@ -15,6 +15,7 @@ from .notify import Discord
 from .rate_limit import RequestBudget
 from .listing_checks import ListingChecks
 from .scan_tracking import ScanTracking
+from .console_prices import ConsolePrices
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("agent")
@@ -30,6 +31,7 @@ class Agent:
                                            worker_ceiling=cfg.get("worker_requests_per_minute", 16)))
         self.db = DB(config.data_dir() / "mut.db")
         self.scan_tracking = ScanTracking(self.db)
+        self.console_prices = ConsolePrices(self.db, cfg)
         self.discord = Discord(cfg["discord_webhook_url"])
         self.tax = cfg["tax_rate"]
         self.backoff = 0
@@ -197,7 +199,8 @@ class Agent:
         if deal:
             if verified and not already_alerted:
                 self.discord.listing(row["name"] or uid, row["url"], deal, self.cfg["platform"],
-                                     promo_today=self.promo_today(), fresh=fresh)
+                                     promo_today=self.promo_today(), fresh=fresh,
+                                     console_preview=self.console_prices.context(uid, now))
                 self.db.log_alert(uid, key)
                 self.db.log_alert(uid, f"price:{deal.bin_price}")
                 self.db.log_flip(uid, row["name"] or uid, row["url"], deal)
@@ -456,7 +459,9 @@ class Agent:
             else:
                 status = "running"
         scans = self.scan_tracking.summary(now)
+        comparison = self.console_prices.report(now)
         state = {
+            "console_price_gaps": comparison["gap_count"],
             "likely_missed_24h": scans["likely_missed_24h"],
             "completed_scans_per_minute": scans["completed_checks_per_minute_5m"],
             "status": status,
@@ -474,6 +479,7 @@ class Agent:
             "latest_video": (self.videos[0].title[:250] if self.videos else None),
         }
         extra = {
+            "console_comparison": comparison,
             "scan_tracking": scans,
             "market": {
                 "fallers": [_mover(x) for x in (self.move.fallers if self.move else [])],

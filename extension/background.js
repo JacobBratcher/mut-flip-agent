@@ -181,6 +181,37 @@ async function checkOne(tab, it, cfg) {
   return { kind: "other" };
 }
 
+let lastPreviewPoll = 0;
+async function checkPreview(tab, cfg) {
+  if (cfg.console_preview_version !== 1 || Date.now() - lastPreviewPoll < 30000) return {kind: "pending"};
+  lastPreviewPoll = Date.now(); // Set before awaiting: two workers share this throttle.
+  const job = await agent("GET", "/preview-queue");
+  if (!job.external_ids?.length) return {kind: "pending"};
+  const gate = await requestPermit(Date.now() + 85000);
+  if (gate.kind !== "permit") return gate;
+  let res;
+  try {
+    res = await tabMsg(tab, {type: "mutfeeder:preview", external_ids: job.external_ids}, 25000);
+  } catch (error) {
+    await agent("POST", "/request-result", {status: 0, outcome: "timeout"});
+    return {kind: "hang", error};
+  }
+  alive();
+  await bump("requests");
+  const feedback = await agent("POST", "/request-result", {
+    status: Math.max(0, res?.status || 0), retry_after: res?.retry_after,
+    outcome: res?.outcome === "api_error" ? "api_error" : res?.status === -1 ? "timeout" : res?.status === 0 ? "network_error" : "http",
+  });
+  if (res && BLOCK_CODES.has(res.status)) return {kind: "blocked", res, wait_ms: Math.max(60000, feedback.wait_ms || 0)};
+  if (feedback.blocked || feedback.wait_ms > 0) return {kind: "blocked", res: res || {status: 0}, wait_ms: feedback.wait_ms};
+  if (res?.status === -1) return {kind: "timeout"};
+  if (res?.status === 200) {
+    await agent("POST", "/preview-ingest", {lease_id: job.lease_id, records: res.records});
+    // Does not increment PC checks or post to the PC snapshot ingest route.
+  }
+  return {kind: "ok"};
+}
+
 async function loop() {
   if (running) return;
   running = true;
@@ -201,6 +232,9 @@ async function loop() {
       let hadItems = false;
       const worker = async () => {
         while (!stop && (await get(["enabled"])).enabled) {
+          const preview = await checkPreview(tab, cfg);
+          if (!["ok", "pending"].includes(preview.kind)) { stop = stop || preview; return; }
+          if (stop) return;
           // Lease just in time; a slow card no longer holds up a batch of fast cards.
           const { items } = await agent("GET", "/queue?n=1");
           if (!items.length || stop) return;
@@ -215,7 +249,7 @@ async function loop() {
       }));
       const failed = results.find((r) => r.status === "rejected");
       if (failed) throw failed.reason;
-      if (!hadItems) { await set({ state: "idle (nothing due)" }); await sleep(3000); continue; }
+      if (!hadItems && !stop) { await set({ state: "idle (nothing due)" }); await sleep(3000); continue; }
 
       if (!stop) { await set({ state: "running" }); continue; }
       if (stop.kind === "hang") {

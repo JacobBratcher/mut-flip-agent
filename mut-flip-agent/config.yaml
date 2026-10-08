@@ -1,5 +1,5 @@
 name: MUT Flip Agent
-version: "1.14.2"
+version: "1.15.0"
 slug: mut_flip_agent
 description: Watches mut.gg PC prices and sends Discord alerts for flips and long-term investments.
 url: https://github.com/JacobBratcher/mut-flip-agent
@@ -29,6 +29,10 @@ options:
   worker_requests_per_minute: 16
   fill_scan_capacity: false
   min_scan_seconds: 65
+  console_comparison:
+    enabled: false
+    min_gap_pct: 0.30
+    min_gap_coins: 50000
   watchlist: []
   discover_all_players: true
   min_ovr: 85
@@ -78,6 +82,10 @@ options:
     fresh_long_hours: 168
   tax_rate: 0.10
 schema:
+  console_comparison:
+    enabled: bool?
+    min_gap_pct: float(0,)?
+    min_gap_coins: int(0,)?
   discord_webhook_url: url
   platform: list(pc)
   game: str
