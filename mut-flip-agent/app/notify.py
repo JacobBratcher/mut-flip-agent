@@ -98,7 +98,7 @@ class Discord:
                             f"listings way under value are most common right after a drop.\n{shown}"),
         }])
 
-    def listing(self, name, url, d, platform, promo_today=False, fresh=False):
+    def listing(self, name, url, d, platform, promo_today=False, fresh=False, console_preview=None):
         safe = getattr(d, "grade", "good") == "safe"
         badge = "🟢 SAFE" if safe else "🟡 GOOD"
         trend = getattr(d, "trend", None)
@@ -131,6 +131,12 @@ class Discord:
             ],
             "footer": {"text": f"{platform.upper()} • MUT.GG listing snapshot • not a reservation"},
         }
+        if console_preview:
+            values = " · ".join(f"{label}: {coins(console_preview[key])}"
+                                for key, label in (("pc", "PC"), ("xbox", "Xbox Series X"), ("ps5", "PS5"))
+                                if console_preview.get(key))
+            embed["fields"].append({"name": "Preview medians (market context)",
+                                    "value": f"{values}\nFetched {console_preview['age_seconds'] // 60} min ago; source sale age unknown. PC resale estimate unchanged."})
         recent = getattr(d, "recent", None)
         if recent:
             embed["fields"].append({"name": "Last sales (newest first)",

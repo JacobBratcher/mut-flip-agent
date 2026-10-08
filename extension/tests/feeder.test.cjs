@@ -41,7 +41,7 @@ function background(responses, overrides = {}, workerId = 'primary', item = {uid
     },
   });
   vm.runInContext(readFileSync(path.join(__dirname, '../background.js'), 'utf8'), context);
-  return { calls, storage, run: () => vm.runInContext("checkOne(1, item, {platform: 'pc'})", context) };
+  return { calls, storage, preview: () => vm.runInContext("checkPreview(1, {console_preview_version: 1})", context), run: () => vm.runInContext("checkOne(1, item, {platform: 'pc'})", context) };
 }
 
 test('every refresh retry obtains a permit and reports its result before ingest', async () => {
@@ -203,4 +203,62 @@ test('known stuck cards use one permitted probe and recover when data is ready',
   const ready = background([{status:200,data:{pricesData:{}}}], {}, 'primary', {uid:'27-1',refresh_retries:0});
   assert.equal((await ready.run()).kind,'ok');
   assert.equal(ready.storage.stats.checks,1);
+});
+
+
+test('preview requests share permits/results without counting PC checks; polling is throttled', async () => {
+  const fixture = background([{status: 200, records: []}], {
+    '/preview-queue': {external_ids: [1, 2], lease_id: 'lease'}, '/preview-ingest': {ok: true},
+  });
+  assert.equal((await fixture.preview()).kind, 'ok');
+  assert.deepEqual(fixture.calls.map(c => c.endpoint || c), [
+    '/preview-queue', '/request-permit', 'mut.gg', '/request-result', '/preview-ingest',
+  ]);
+  assert.equal(fixture.storage.stats.requests, 1);
+  assert.equal(fixture.storage.stats.checks, 0);
+  assert.equal((await fixture.preview()).kind, 'pending');
+  assert.equal(fixture.calls.length, 5);
+});
+
+test('preview refusal pauses through shared budget and does not ingest', async () => {
+  const fixture = background([{status: 429, retry_after: '7200'}], {
+    '/preview-queue': {external_ids: [1], lease_id: 'lease'},
+  });
+  const result = await fixture.preview();
+  assert.equal(result.kind, 'blocked');
+  assert.equal(result.wait_ms, 7200000);
+  assert.equal(fixture.calls.some(c => c.endpoint === '/preview-ingest'), false);
+});
+
+test('preview uses only one batched overall endpoint and returns allowlisted prices', async () => {
+  const calls = [];
+  const context = vm.createContext({
+    AbortSignal, chrome: {runtime: {onMessage: {addListener() {}}}},
+    fetch: async (url) => {
+      calls.push(url);
+      return {ok: true, headers: {get: () => 'application/json'}, json: async () => ({data: [
+        {externalId: 1, priceDisplay: {'pc': '100,000', 'xbox-series-x': '50K', 'playstation-5': null,
+          'xbox-one': 'secret'}, private: 'secret'},
+      ]})};
+    },
+  });
+  vm.runInContext(readFileSync(path.join(__dirname, '../content.js'), 'utf8'), context);
+  const result = await vm.runInContext('fetchPreview([1, 2])', context);
+  assert.deepEqual(calls, ['/api/mutdb/prices/overall/playeritem/?external_ids=1,2']);
+  assert.equal(result.status, 200);
+  assert.equal(JSON.stringify(result).includes('secret'), false);
+  await assert.rejects(vm.runInContext('fetchPreview([1, 1])', context), /Invalid/);
+  assert.equal(calls.length, 1);
+});
+
+test('malformed preview envelopes report API errors without leaking body or accepting extra cards', async () => {
+  for (const data of [{}, [{externalId: 99, priceDisplay: {}}], [{externalId: 1, priceDisplay: []}]]) {
+    const context = vm.createContext({AbortSignal, chrome: {runtime: {onMessage: {addListener() {}}}},
+      fetch: async () => ({ok: true, headers: {get: () => 'application/json'}, json: async () => ({data, private: 'secret'})}),
+    });
+    vm.runInContext(readFileSync(path.join(__dirname, '../content.js'), 'utf8'), context);
+    const result = await vm.runInContext('fetchPreview([1])', context);
+    assert.equal(result.outcome, 'api_error');
+    assert.equal(JSON.stringify(result).includes('secret'), false);
+  }
 });

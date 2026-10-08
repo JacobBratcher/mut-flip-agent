@@ -12,6 +12,8 @@ DEVICE = {"identifiers": [PREFIX], "name": "MUT Flip Agent", "manufacturer": "mu
           "model": "Price agent", "sw_version": os.environ.get("BUILD_VERSION", "")}
 
 SENSORS = [
+    ("console_price_gaps", "PC versus console price gaps", "mdi:compare-horizontal",
+     {"state_class": "measurement", "json_attributes_topic": f"{PREFIX}/console_comparison"}),
     ("likely_missed_24h", "Likely missed snipes 24h", "mdi:timer-alert-outline",
      {"state_class": "measurement", "json_attributes_topic": f"{PREFIX}/scan_tracking"}),
     ("completed_scans_per_minute", "Completed scans per minute", "mdi:speedometer",

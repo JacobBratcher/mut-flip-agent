@@ -210,3 +210,31 @@ Extension 1.6.0 requires server 1.14.0. JSON API errors or malformed/missing pri
 Server 1.14.1 and feeder 1.6.1 reduce retries for a card whose latest response is still `updating`, which has accumulated at least eight refreshing responses, and which has no accepted snapshot within five minutes. Such a card gets one permitted probe per scheduled lease instead of four closely spaced requests. Healthy/recovered cards keep normal refresh retries. A ready response is still accepted immediately, and the next lease restores normal retries. No unfinished response is used for alerts or scan coverage.
 
 Server 1.14.2 / feeder 1.6.2 keep cards with unfinished PC price data on the regular scan cadence as well. When the final refresh attempt still returns `updating`, the worker reports completion of that attempt sequence and the server reschedules the card after `min_scan_seconds` (65 by default), rather than waiting for its five-minute abandoned-lease timeout. That retry interval remains protected against duplicate leases and spare-capacity scans. This does not establish availability or mark an unfinished response as a completed price scan; ready data restores normal processing. Shared cooldowns still apply to every card.
+
+### PC versus console preview medians
+
+Server 1.15.0 / feeder 1.7.0 add an optional `console_comparison` setting:
+
+```yaml
+console_comparison:
+  enabled: true
+  min_gap_pct: 0.30
+  min_gap_coins: 50000
+```
+
+The browser reads MUT.GG's batched list-preview endpoint for PC, Xbox Series X,
+and PS5, without fetching console sales histories. Up to 20 tracked cards share
+one request, with a global maximum of one preview batch per minute and a target
+refresh interval of ten minutes per card (larger collections take longer). Every
+batch requires the same shared request permit as PC scans and reports failures
+to the same cooldown controller. PC card scheduling is unchanged; previews consume
+at most one request/minute of the existing budget.
+
+The authenticated `/console-report` and Home Assistant **PC versus console price
+gaps** sensor expose differences meeting **both** thresholds, in either direction.
+Percentage is `(PC median - console median) / console median`; each console is
+reported separately. Comparisons older than 30 minutes, missing prices, and
+unpriced cards are excluded. Reported age is time since preview fetch, not the age
+of the underlying sales. Existing snipe alerts include fresh preview medians as
+context; PC sale history still determines PC valuation and qualification. Console
+prices are not executable offers or proof of PC resale value. Disabled by default.

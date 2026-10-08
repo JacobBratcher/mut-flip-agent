@@ -20,6 +20,7 @@ DEFAULTS = {
     "worker_requests_per_minute": 16,
     "fill_scan_capacity": False,
     "min_scan_seconds": 65,
+    "console_comparison": {"enabled": False, "min_gap_pct": 0.30, "min_gap_coins": 50000},
     "watchlist": [],
     "discover_all_players": True,
     "min_ovr": 85,

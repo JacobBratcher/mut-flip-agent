@@ -92,6 +92,7 @@ def serve(agent, port):
                                         "worker_tracking_version": 1,
                                         "scan_diagnostics_version": 1,
                                         "scan_cadence_version": 1,
+                                        "console_preview_version": 1,
                                         "interval_ms": int(60000 / rpm)})
             if u.path == "/queue":
                 n = min(10, max(1, int(parse_qs(u.query).get("n", ["5"])[0])))
@@ -104,6 +105,14 @@ def serve(agent, port):
                              for r in rows]
                 self._activity(f"queue:{n}", len(rows))
                 return self._send(200, {"items": items})
+            if u.path == "/preview-queue":
+                with agent.lock:
+                    preview = agent.console_prices.lease(time.time())
+                self._activity("preview-queue", len(preview["external_ids"]))
+                return self._send(200, preview)
+            if u.path == "/console-report":
+                with agent.lock:
+                    return self._send(200, agent.console_prices.report(time.time()))
             if u.path == "/scan-report":
                 with agent.lock:
                     report = agent.scan_tracking.summary(time.time(), limit=100)
@@ -177,6 +186,14 @@ def serve(agent, port):
                             if result == "refreshing" and body.get("retry_exhausted") is True:
                                 agent.db.defer_refresh(uid, time.time() + agent.cfg.get("min_scan_seconds", 65))
                 return self._send(200, feedback)
+            if u.path == "/preview-ingest":
+                with agent.lock:
+                    try:
+                        count = agent.console_prices.ingest(body, time.time())
+                    except ValueError as error:
+                        return self._send(400, {"error": str(error)})
+                self._activity("preview-ingest", count)
+                return self._send(200, {"ok": True, "items": count})
             if u.path == "/ingest":
                 uid, data = body.get("uid"), body.get("data")
                 if not isinstance(uid, str) or not isinstance(data, dict):
