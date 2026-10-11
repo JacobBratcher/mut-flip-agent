@@ -98,6 +98,21 @@ class Discord:
                             f"listings way under value are most common right after a drop.\n{shown}"),
         }])
 
+    def target(self, name, url, max_price, hits, platform):
+        cheapest = hits[0][0]
+        lines = [f"**Buy Now {coins(cheapest)}**, your max is {coins(max_price)}."]
+        lines += [f"• {coins(p)}, ends <t:{int(end)}:R>" for p, end in hits[:10]]
+        lines.append(f"Last checked: <t:{int(time.time())}:f>. Availability can change.")
+        embed = {
+            "title": f"🎯 PRICE TARGET: {name}",
+            "color": GREEN,
+            "description": "\n".join(lines),
+            "footer": {"text": f"{platform.upper()} • watchlist target • MUT.GG listing snapshot"},
+        }
+        if url:
+            embed["url"] = url
+        self.send([embed], content="@here")
+
     def listing(self, name, url, d, platform, promo_today=False, fresh=False):
         safe = getattr(d, "grade", "good") == "safe"
         badge = "🟢 SAFE" if safe else "🟡 GOOD"

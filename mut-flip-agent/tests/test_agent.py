@@ -263,3 +263,37 @@ def test_discovery_runs_often_right_after_a_promo(tmp_path, monkeypatch):
     assert agent.discovery_due()
     agent.last_discovery_try = time.time() - 600          # tried 10 min ago: wait
     assert not agent.discovery_due()
+
+
+def test_watchlist_price_target(tmp_path, monkeypatch):
+    from datetime import datetime as dt
+    from app.client import parse_watch
+    assert parse_watch("27-1 | 800k") == ("27-1", "", 800_000)
+    assert parse_watch("27-1|1.2m") == ("27-1", "", 1_200_000)
+    assert parse_watch("27-1 | 750,000") == ("27-1", "", 750_000)
+    assert parse_watch("27-1 | cheap") is None
+    assert parse_watch("27-1") == ("27-1", "", None)
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    url = "https://www.mut.gg/players/13085-saquon-barkley/27-181513085/"
+    cfg = DEFAULTS | {"discord_webhook_url": "x", "watchlist": [f"{url} | 800k"],
+                      "discover_all_players": False}
+    agent = main.Agent(cfg)
+    hits = []
+
+    class D(FakeDiscord):
+        def target(self, name, url, max_price, h, platform):
+            hits.append((max_price, [p for p, _ in h]))
+
+    end = (dt.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+    live = [{"buyNowPrice": 790_000, "endDate": end}, {"buyNowPrice": 900_000, "endDate": end}]
+
+    class API(FakeAPI):
+        def prices(self, uid, url=""):
+            return {"pricesData": {"completedAuctions": list(self.auctions), "liveAuctions": live}}
+
+    agent.api, agent.discord = API(), D()
+    agent.sync_items()
+    agent.check(agent.db.item("27-181513085"))
+    agent.check(agent.db.item("27-181513085"))       # same listing again: no duplicate alert
+    assert hits == [(800_000, [790_000])]
