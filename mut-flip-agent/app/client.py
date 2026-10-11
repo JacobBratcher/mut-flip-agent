@@ -188,6 +188,31 @@ def parse_live(data: dict) -> list[tuple[int, float]]:
     return out
 
 
+def parse_coins(text: str) -> int | None:
+    """'800k' -> 800000, '1.2m' -> 1200000, '750,000' -> 750000."""
+    m = re.fullmatch(r"\s*([\d.,]+)\s*([km]?)\s*", text.lower())
+    if not m:
+        return None
+    try:
+        n = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    n *= {"k": 1_000, "m": 1_000_000}.get(m.group(2), 1)
+    return int(n) if n > 0 else None
+
+
+def parse_watch(entry: str) -> tuple[str, str, int | None] | None:
+    """'<url or id>' or '<url or id> | <max price>' -> (uid, url, max_price)."""
+    target, _, price = entry.partition("|")
+    parsed = normalize_watch(target)
+    if not parsed:
+        return None
+    max_price = parse_coins(price) if price.strip() else None
+    if price.strip() and max_price is None:
+        return None
+    return parsed[0], parsed[1], max_price
+
+
 def normalize_watch(entry: str) -> tuple[str, str] | None:
     """Accepts a full mut.gg URL or a unique id like '27-162004004'."""
     entry = entry.strip()

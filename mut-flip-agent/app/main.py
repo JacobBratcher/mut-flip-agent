@@ -8,7 +8,7 @@ from datetime import datetime
 import requests
 
 from . import analysis, config, market, youtube
-from .client import Blocked, MutGG, normalize_watch, parse_live, parse_price, parse_sales, parse_volume
+from .client import Blocked, MutGG, parse_watch, parse_live, parse_price, parse_sales, parse_volume
 from .db import DB, locked
 from .ha import HA
 from .notify import Discord
@@ -34,6 +34,7 @@ class Agent:
         self.tax = cfg["tax_rate"]
         self.backoff = 0
         self.watched = set()
+        self.targets = {}                # uid -> max Buy Now price to alert at (watchlist "url | 800k")
         self.plan = analysis.plan(cfg, 0, 0)
         self.ha = HA()
         self.status = "starting"
@@ -66,12 +67,16 @@ class Agent:
     def sync_items(self):
         with self.lock:
             for entry in self.cfg["watchlist"]:
-                parsed = normalize_watch(entry)
+                parsed = parse_watch(entry)
                 if not parsed:
-                    log.warning("Skipping watchlist entry %r (not a mut.gg URL or id)", entry)
+                    log.warning("Skipping watchlist entry %r (expected a mut.gg URL or id, "
+                                "optionally followed by '| max price' like '| 800k')", entry)
                     continue
-                uid, url = parsed
+                uid, url, max_price = parsed
                 self.watched.add(uid)
+                if max_price:
+                    self.targets[uid] = max_price
+                    log.info("WATCH %s alert at Buy Now <= %s", uid, max_price)
                 self.db.upsert_item(uid, url, tier="watch")
             # Anything no longer on the watchlist drops back to normal scheduling.
             for row in self.db.all_items():
@@ -187,6 +192,8 @@ class Agent:
             self.last_publish = 0
             log.info("FLIP %s buy<=%s profit=%s", uid, signal.max_buy, signal.profit)
 
+        self.check_target(row, listings, now)
+
         fresh = analysis.is_fresh(row["name"], self.fresh_map.get(uid), now, self.cfg)
         deal = analysis.live_deal(listings, history, self.cfg, self.tax, now,
                                   sales_24h=parse_volume(data), mutgg_price=parse_price(data))
@@ -218,6 +225,22 @@ class Agent:
             scheduled = self.db.item(uid)
             self.db.set_schedule(uid, scheduled["tier"], min(scheduled["next_check"], verify_at))
         return True
+
+    def check_target(self, row, listings, now):
+        """Watchlist price target: alert on every live Buy Now at or under the max price."""
+        uid, max_price = row["uid"], self.targets.get(row["uid"])
+        if not max_price:
+            return
+        hits = sorted((p, end) for p, end in listings if p <= max_price and end > now)
+        new_hits = [(p, end) for p, end in hits
+                    if not self.db.last_alert(uid, f"target:{p}:{int(end)}")]
+        if not new_hits:
+            return
+        row = self.ensure_name(row)
+        self.discord.target(row["name"] or uid, row["url"], max_price, new_hits, self.cfg["platform"])
+        for p, end in new_hits:
+            self.db.log_alert(uid, f"target:{p}:{int(end)}")
+        log.info("TARGET %s max=%s hits=%s", uid, max_price, [p for p, _ in new_hits])
 
     def ensure_name(self, row):
         """Fetch the full card name only for cards we care about (saves ~4k requests)."""
